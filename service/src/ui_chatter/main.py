@@ -1,6 +1,7 @@
 """Main FastAPI application with WebSocket support."""
 
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -32,12 +33,26 @@ async def lifespan(app: FastAPI):
 
     global connection_manager, session_manager, screenshot_store
 
+    # Get project path from environment (set by CLI) or use settings default
+    project_path = os.environ.get("UI_CHATTER_PROJECT_PATH", settings.PROJECT_PATH)
+    logger.info(f"Project path: {project_path}")
+
+    # Get permission mode from environment or use settings default
+    permission_mode = os.environ.get("PERMISSION_MODE", settings.PERMISSION_MODE)
+
     connection_manager = ConnectionManager(max_connections=settings.MAX_CONNECTIONS)
     session_manager = SessionManager(
         max_idle_minutes=settings.MAX_SESSION_IDLE_MINUTES,
+        backend_strategy=settings.BACKEND_STRATEGY,
         api_key=settings.ANTHROPIC_API_KEY,
+        project_path=project_path,  # Pass project path to session manager
+        permission_mode=permission_mode,
     )
-    screenshot_store = ScreenshotStore(project_path=settings.PROJECT_PATH)
+    screenshot_store = ScreenshotStore(project_path=project_path)
+
+    logger.info(f"Using backend strategy: {settings.BACKEND_STRATEGY}")
+    if settings.BACKEND_STRATEGY == "claude-cli":
+        logger.info(f"Permission mode: {permission_mode}")
 
     # Start background tasks
     session_manager.start_cleanup_task()
@@ -80,8 +95,8 @@ async def websocket_endpoint(websocket: WebSocket):
         # Connect with origin validation
         await connection_manager.connect(session_id, websocket)
 
-        # Create agent session using configured project path
-        session = await session_manager.create_session(session_id, settings.PROJECT_PATH)
+        # Create agent session - session manager has project path
+        session = await session_manager.create_session(session_id)
 
         logger.info(f"Session {session_id} ready for messages")
 
@@ -122,11 +137,21 @@ async def websocket_endpoint(websocket: WebSocket):
                     {"type": "status", "status": "thinking", "detail": None},
                 )
 
-                # Stream response from agent
-                async for response in session.agent_manager.handle_chat(
-                    chat_request.context, chat_request.message, screenshot_path
+                # Check if this is the first message for this session
+                is_first = session.is_first_message()
+
+                # Stream response from agent backend
+                async for response in session.backend.handle_chat(
+                    chat_request.context,
+                    chat_request.message,
+                    is_first_message=is_first,
+                    screenshot_path=screenshot_path,
                 ):
                     await connection_manager.send_message(session_id, response)
+
+                # Mark first message as sent
+                if is_first:
+                    session.mark_first_message_sent()
 
                 # Send done status
                 await connection_manager.send_message(

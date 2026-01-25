@@ -1,5 +1,5 @@
 // Background service worker - manages WebSocket connection
-const WS_URL = 'ws://localhost:3456';
+const WS_URL = 'ws://localhost:3456/ws';
 let ws = null;
 let reconnectTimer = null;
 

@@ -1,6 +1,6 @@
 """Application configuration with environment variable support."""
 
-from typing import List, Optional
+from typing import List, Optional, Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,11 +8,14 @@ class Settings(BaseSettings):
     """
     Application settings with environment variable support.
 
-    Priority: ENV > .env file > defaults
+    Priority: ENV > .env.local > .env > defaults
+    .env.local is gitignored for local overrides
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", case_sensitive=True
+        env_file=(".env", ".env.local"),
+        env_file_encoding="utf-8",
+        case_sensitive=True,
     )
 
     # Service configuration
@@ -23,8 +26,16 @@ class Settings(BaseSettings):
     PORT: int = 3456
     LOG_LEVEL: str = "INFO"
 
-    # Claude API configuration
-    ANTHROPIC_API_KEY: Optional[str] = None  # Fallback if OAuth unavailable
+    # Backend strategy selection
+    BACKEND_STRATEGY: Literal["anthropic-sdk", "claude-cli"] = "claude-cli"
+
+    # Claude CLI configuration (for claude-cli backend)
+    PERMISSION_MODE: Literal[
+        "acceptEdits", "bypassPermissions", "default", "delegate", "dontAsk", "plan"
+    ] = "bypassPermissions"
+
+    # Claude API configuration (for anthropic-sdk backend)
+    ANTHROPIC_API_KEY: Optional[str] = None  # Required for anthropic-sdk backend
 
     # Storage
     MAX_SCREENSHOT_AGE_HOURS: int = 24

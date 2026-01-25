@@ -3,9 +3,9 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict, Optional, Literal
 
-from .agent_manager import AgentManager
+from .backends import AgentBackend, AnthropicSDKBackend, ClaudeCodeCLIBackend
 
 logger = logging.getLogger(__name__)
 
@@ -13,12 +13,22 @@ logger = logging.getLogger(__name__)
 class AgentSession:
     """Represents a single agent session with state."""
 
-    def __init__(self, session_id: str, project_path: str, api_key: Optional[str] = None):
+    def __init__(self, session_id: str, project_path: str, backend: AgentBackend):
         self.session_id = session_id
         self.project_path = project_path
         self.created_at = datetime.now()
         self.last_activity = datetime.now()
-        self.agent_manager = AgentManager(project_path, api_key)
+        self.backend = backend
+        self.first_message_sent = False  # Track if first message has been sent
+
+    def mark_first_message_sent(self) -> None:
+        """Mark that the first message has been sent for this session."""
+        self.first_message_sent = True
+        self.touch()
+
+    def is_first_message(self) -> bool:
+        """Check if this is the first message for this session."""
+        return not self.first_message_sent
 
     def touch(self) -> None:
         """Update last activity timestamp."""
@@ -33,19 +43,48 @@ class SessionManager:
     - Session isolation
     - Automatic idle session cleanup
     - Resource management
+    - Backend strategy support (Anthropic SDK or Claude CLI)
     """
 
-    def __init__(self, max_idle_minutes: int = 30, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        max_idle_minutes: int = 30,
+        backend_strategy: Literal["anthropic-sdk", "claude-cli"] = "claude-cli",
+        api_key: Optional[str] = None,
+        project_path: str = ".",
+        permission_mode: str = "bypassPermissions",
+    ):
         self.max_idle_minutes = max_idle_minutes
+        self.backend_strategy = backend_strategy
         self.api_key = api_key
+        self.project_path = project_path
+        self.permission_mode = permission_mode
         self.sessions: Dict[str, AgentSession] = {}
         self._cleanup_task: Optional[asyncio.Task] = None
 
-    async def create_session(self, session_id: str, project_path: str) -> AgentSession:
-        """Create new isolated agent session."""
-        session = AgentSession(session_id, project_path, self.api_key)
+        logger.info(f"Initialized SessionManager with backend: {backend_strategy}, project: {project_path}")
+
+    def _create_backend(self, session_id: str, project_path: str) -> AgentBackend:
+        """Create appropriate backend based on strategy."""
+        if self.backend_strategy == "anthropic-sdk":
+            logger.info("Creating Anthropic SDK backend")
+            return AnthropicSDKBackend(project_path, api_key=self.api_key)
+        elif self.backend_strategy == "claude-cli":
+            logger.info("Creating Claude Code CLI backend")
+            return ClaudeCodeCLIBackend(
+                project_path, session_id=session_id, permission_mode=self.permission_mode
+            )
+        else:
+            raise ValueError(f"Unknown backend strategy: {self.backend_strategy}")
+
+    async def create_session(self, session_id: str) -> AgentSession:
+        """Create new isolated agent session with configured backend."""
+        backend = self._create_backend(session_id, self.project_path)
+        session = AgentSession(session_id, self.project_path, backend)
         self.sessions[session_id] = session
-        logger.info(f"Created session: {session_id}")
+        logger.info(
+            f"Created session: {session_id} with {self.backend_strategy} backend for project: {self.project_path}"
+        )
         return session
 
     async def get_session(self, session_id: str) -> Optional[AgentSession]:
@@ -59,7 +98,7 @@ class SessionManager:
         """Remove and cleanup session."""
         session = self.sessions.pop(session_id, None)
         if session:
-            await session.agent_manager.shutdown()
+            await session.backend.shutdown()
             logger.info(f"Removed session: {session_id}")
 
     def start_cleanup_task(self) -> None:

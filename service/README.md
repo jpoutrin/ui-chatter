@@ -8,7 +8,9 @@ Python FastAPI service for UI Chatter - connecting browser extension to Claude A
 
 - Python 3.10 or higher
 - UV package manager ([installation](https://github.com/astral-sh/uv#installation))
-- Anthropic API key (or Claude Max subscription with OAuth)
+- **Either:**
+  - Claude Code CLI installed and authenticated (recommended - uses OAuth), **OR**
+  - Anthropic API key from console.anthropic.com
 
 ### Installation
 
@@ -29,33 +31,50 @@ uv pip install -e ".[dev]"
 
 ### Configuration
 
-Create a `.env` file in the service directory:
+UI Chatter supports two backend strategies:
 
+1. **Claude Code CLI** (recommended) - Uses your Claude Code OAuth authentication
+2. **Anthropic SDK** - Direct API calls (requires API key)
+
+**For Claude Code CLI (default):**
 ```bash
-# Copy example configuration
-cp .env.example .env
-
-# Edit .env and add your Anthropic API key
-ANTHROPIC_API_KEY=sk-ant-...
+# No configuration needed - uses Claude Code's authentication
+# Just ensure 'claude' command is available
+which claude
 ```
+
+**For Anthropic SDK:**
+```bash
+# Create .env.local for local overrides (gitignored)
+echo "BACKEND_STRATEGY=anthropic-sdk" > .env.local
+echo "ANTHROPIC_API_KEY=sk-ant-..." >> .env.local
+```
+
+See [docs/BACKENDS.md](docs/BACKENDS.md) for detailed backend comparison.
 
 ### Running the Service
 
 ```bash
-# Start server on default port 3456
-ui-chatter serve
+# Start server with Claude Code CLI backend (default)
+ui-chatter
+
+# Use Anthropic SDK backend instead
+ui-chatter --backend anthropic-sdk
 
 # Specify project directory
-ui-chatter serve --project /path/to/your/project
+ui-chatter --project /path/to/your/project
 
 # Enable debug logging
-ui-chatter serve --debug
+ui-chatter --debug
 
 # Custom port
-ui-chatter serve --port 8080
+ui-chatter --port 8080
 
 # Development mode with auto-reload
-ui-chatter serve --reload --debug
+ui-chatter --reload --debug
+
+# Combine options
+ui-chatter --backend claude-cli --project ~/my-app --debug
 ```
 
 ### Health Check
@@ -148,7 +167,8 @@ mypy src/
    - Manages connection lifecycle
    - Enforces connection limits
 
-2. **AgentManager** (`agent_manager.py`)
+2. **Backend Strategy** (`backends/`)
+   - Pluggable backend system (Claude CLI or Anthropic SDK)
    - Lazy initialization of Claude client
    - Streams responses with error handling
    - Graceful shutdown
@@ -193,11 +213,12 @@ Environment variables (`.env` file):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `BACKEND_STRATEGY` | `claude-cli` | Backend: `claude-cli` or `anthropic-sdk` |
+| `ANTHROPIC_API_KEY` | - | Claude API key (required for `anthropic-sdk`) |
 | `DEBUG` | `false` | Enable debug logging |
 | `HOST` | `localhost` | Bind address |
 | `PORT` | `3456` | WebSocket port |
 | `LOG_LEVEL` | `INFO` | Logging level |
-| `ANTHROPIC_API_KEY` | - | Claude API key |
 | `MAX_SCREENSHOT_AGE_HOURS` | `24` | Screenshot retention |
 | `MAX_SESSION_IDLE_MINUTES` | `30` | Session timeout |
 | `MAX_CONNECTIONS` | `100` | Max concurrent connections |
@@ -216,9 +237,15 @@ ui-chatter serve --port 8080
 
 ### Authentication errors
 
-1. Check your API key in `.env`
+**For Claude CLI backend:**
+1. Verify Claude Code is installed: `which claude`
+2. Check authentication: `claude login`
+3. Test CLI: `echo "hello" | claude -p`
+
+**For Anthropic SDK backend:**
+1. Check your API key in `.env.local`
 2. Verify API key is valid: `curl https://api.anthropic.com/v1/messages -H "x-api-key: $ANTHROPIC_API_KEY"`
-3. For Claude Max, ensure OAuth is configured
+3. Get a new key: https://console.anthropic.com/settings/keys
 
 ### Connection issues
 
