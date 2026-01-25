@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     # Service configuration
     PROJECT_NAME: str = "UI Chatter"
+    PROJECT_PATH: str = "."  # Project directory to work in
     DEBUG: bool = False
     HOST: str = "localhost"
     PORT: int = 3456

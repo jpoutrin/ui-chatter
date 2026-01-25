@@ -1,6 +1,7 @@
 """Typer CLI interface for UI Chatter."""
 
 import asyncio
+import os
 import signal
 import sys
 from pathlib import Path
@@ -83,6 +84,9 @@ def serve(
             border_style="green",
         )
     )
+
+    # Set project path environment variable for the service
+    os.environ["UI_CHATTER_PROJECT_PATH"] = str(project_path)
 
     # Start Uvicorn
     uvicorn.run(

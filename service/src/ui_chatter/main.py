@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
         max_idle_minutes=settings.MAX_SESSION_IDLE_MINUTES,
         api_key=settings.ANTHROPIC_API_KEY,
     )
-    screenshot_store = ScreenshotStore(project_path=".")  # Updated per request
+    screenshot_store = ScreenshotStore(project_path=settings.PROJECT_PATH)
 
     # Start background tasks
     session_manager.start_cleanup_task()
@@ -80,10 +80,8 @@ async def websocket_endpoint(websocket: WebSocket):
         # Connect with origin validation
         await connection_manager.connect(session_id, websocket)
 
-        # Create agent session
-        # TODO: Get project_path from handshake message
-        project_path = "."
-        session = await session_manager.create_session(session_id, project_path)
+        # Create agent session using configured project path
+        session = await session_manager.create_session(session_id, settings.PROJECT_PATH)
 
         logger.info(f"Session {session_id} ready for messages")
 
