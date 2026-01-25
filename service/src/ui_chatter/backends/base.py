@@ -86,6 +86,12 @@ class AgentBackend(ABC):
         if element.textContent:
             prompt_parts.append(f"Text content: {element.textContent}")
 
+        if element.xpath:
+            prompt_parts.append(f"XPath: {element.xpath}")
+
+        if element.cssSelector:
+            prompt_parts.append(f"CSS Selector: {element.cssSelector}")
+
         if context.page:
             prompt_parts.append(f"On page: {context.page.url}")
 
