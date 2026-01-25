@@ -11,6 +11,69 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+// Generate XPath for an element
+function getXPath(element) {
+  if (element.id !== '') {
+    return `//*[@id="${element.id}"]`;
+  }
+
+  if (element === document.body) {
+    return '/html/body';
+  }
+
+  let path = [];
+  while (element && element.nodeType === Node.ELEMENT_NODE) {
+    let index = 0;
+    let sibling = element.previousSibling;
+
+    while (sibling) {
+      if (sibling.nodeType === Node.ELEMENT_NODE && sibling.tagName === element.tagName) {
+        index++;
+      }
+      sibling = sibling.previousSibling;
+    }
+
+    const tagName = element.tagName.toLowerCase();
+    const pathIndex = index > 0 ? `[${index + 1}]` : '';
+    path.unshift(`${tagName}${pathIndex}`);
+
+    element = element.parentElement;
+  }
+
+  return path.length ? `/${path.join('/')}` : '';
+}
+
+// Generate CSS selector for an element
+function getCSSSelector(element) {
+  if (element.id) {
+    return `#${element.id}`;
+  }
+
+  let path = [];
+  while (element && element !== document.body) {
+    let selector = element.tagName.toLowerCase();
+
+    if (element.classList.length > 0) {
+      selector += '.' + Array.from(element.classList).join('.');
+    }
+
+    // Add nth-child if needed for uniqueness
+    if (element.parentElement) {
+      const siblings = Array.from(element.parentElement.children);
+      const sameTagSiblings = siblings.filter(s => s.tagName === element.tagName);
+      if (sameTagSiblings.length > 1) {
+        const index = siblings.indexOf(element) + 1;
+        selector += `:nth-child(${index})`;
+      }
+    }
+
+    path.unshift(selector);
+    element = element.parentElement;
+  }
+
+  return path.join(' > ');
+}
+
 // Capture element data
 function captureElement(element) {
   const rect = element.getBoundingClientRect();
@@ -43,7 +106,9 @@ function captureElement(element) {
         y: rect.y,
         width: rect.width,
         height: rect.height
-      }
+      },
+      xpath: getXPath(element),
+      cssSelector: getCSSSelector(element)
     },
     ancestors,
     page: {
