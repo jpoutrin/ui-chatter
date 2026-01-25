@@ -3,9 +3,13 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Literal
+from typing import Dict, Optional, Literal, List, TYPE_CHECKING
 
 from .backends import AgentBackend, AnthropicSDKBackend, ClaudeCodeCLIBackend
+
+if TYPE_CHECKING:
+    from .session_store import SessionStore
+    from .session_repository import SessionRepository, ClaudeMessage
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +57,8 @@ class SessionManager:
         api_key: Optional[str] = None,
         project_path: str = ".",
         permission_mode: str = "bypassPermissions",
+        session_store: Optional["SessionStore"] = None,
+        session_repository: Optional["SessionRepository"] = None,
     ):
         self.max_idle_minutes = max_idle_minutes
         self.backend_strategy = backend_strategy
@@ -61,6 +67,8 @@ class SessionManager:
         self.permission_mode = permission_mode
         self.sessions: Dict[str, AgentSession] = {}
         self._cleanup_task: Optional[asyncio.Task] = None
+        self.session_store = session_store
+        self.session_repository = session_repository
 
         logger.info(f"Initialized SessionManager with backend: {backend_strategy}, project: {project_path}")
 
@@ -82,6 +90,17 @@ class SessionManager:
         backend = self._create_backend(session_id, self.project_path)
         session = AgentSession(session_id, self.project_path, backend)
         self.sessions[session_id] = session
+
+        # Persist metadata to SQLite
+        if self.session_store:
+            await self.session_store.save_session(
+                session_id=session_id,
+                project_path=self.project_path,
+                backend_type=self.backend_strategy,
+                permission_mode=self.permission_mode if self.backend_strategy == "claude-cli" else None,
+                created_at=session.created_at,
+            )
+
         logger.info(
             f"Created session: {session_id} with {self.backend_strategy} backend for project: {self.project_path}"
         )
@@ -92,6 +111,9 @@ class SessionManager:
         session = self.sessions.get(session_id)
         if session:
             session.touch()
+            # Update activity in store
+            if self.session_store:
+                await self.session_store.update_session_activity(session_id)
         return session
 
     async def remove_session(self, session_id: str) -> None:
@@ -99,6 +121,9 @@ class SessionManager:
         session = self.sessions.pop(session_id, None)
         if session:
             await session.backend.shutdown()
+            # Delete from store
+            if self.session_store:
+                await self.session_store.delete_session(session_id)
             logger.info(f"Removed session: {session_id}")
 
     def start_cleanup_task(self) -> None:
@@ -147,3 +172,53 @@ class SessionManager:
     def get_session_count(self) -> int:
         """Get number of active sessions."""
         return len(self.sessions)
+
+    async def get_conversation_history(self, session_id: str) -> List["ClaudeMessage"]:
+        """Get conversation history from Claude Code's storage."""
+        if not self.session_repository:
+            return []
+
+        return self.session_repository.get_messages(session_id)
+
+    async def recover_sessions(self) -> int:
+        """Recover active sessions from store."""
+        if not self.session_store:
+            return 0
+
+        active_sessions = await self.session_store.get_active_sessions()
+
+        recovered_count = 0
+        for session_data in active_sessions:
+            try:
+                session_id = session_data["session_id"]
+
+                if session_id in self.sessions:
+                    continue
+
+                # Reconstruct backend
+                backend = self._create_backend(session_id, session_data["project_path"])
+
+                # Create session object
+                session = AgentSession(session_id, session_data["project_path"], backend)
+                session.created_at = datetime.fromisoformat(session_data["created_at"])
+                session.last_activity = datetime.fromisoformat(session_data["last_activity"])
+                session.first_message_sent = bool(session_data["first_message_sent"])
+
+                self.sessions[session_id] = session
+                recovered_count += 1
+
+                logger.info(f"Recovered session {session_id}")
+
+            except Exception as e:
+                logger.error(f"Failed to recover session: {e}")
+
+        return recovered_count
+
+    async def mark_first_message_sent(self, session_id: str) -> None:
+        """Mark that first message has been sent in both session and store."""
+        session = self.sessions.get(session_id)
+        if session:
+            session.mark_first_message_sent()
+
+        if self.session_store:
+            await self.session_store.mark_first_message_sent(session_id)
