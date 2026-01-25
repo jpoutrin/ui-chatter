@@ -6,12 +6,12 @@
 |-------|-------|
 | **Tech Spec ID** | TS-0001 |
 | **Title** | ACP Browser Integration POC |
-| **Status** | DRAFT |
+| **Status** | COMPLETED |
 | **Author** | |
 | **Created** | 2026-01-15 |
-| **Last Updated** | 2026-01-15 |
-| **Decision Ref** | N/A |
-| **Related Docs** | [UI Context Bridge Brainstorm](../../docs/tech-brainstorm/2026-01-08-ui-context-bridge/session-summary.md) |
+| **Last Updated** | 2026-01-25 |
+| **Decision Ref** | [ADR-0001: Use Agent SDK Over ACP](../../docs/decisions/ADR-0001-use-agent-sdk-over-acp.md) |
+| **Related Docs** | [UI Context Bridge Brainstorm](../../docs/tech-brainstorm/2026-01-08-ui-context-bridge/session-summary.md), [POC Results](../../poc/POC-RESULTS.md) |
 
 ---
 
@@ -36,12 +36,14 @@ Build a minimal end-to-end POC that:
 
 ### Success Criteria
 
-| Metric | Target | Rationale |
-|--------|--------|-----------|
-| First token latency | < 3 seconds | Acceptable chat UX |
-| Streaming smoothness | No visible stuttering | User experience |
-| Memory footprint | < 200MB idle | Reasonable for dev tool |
-| Process stability | No crashes in 10 interactions | Basic reliability |
+| Metric | Target | Actual | Result |
+|--------|--------|--------|--------|
+| First token latency | < 3 seconds | **~60 seconds** | ❌ FAILED |
+| Streaming smoothness | No visible stuttering | Not tested | N/A |
+| Memory footprint | < 200MB idle | ✅ ~50MB | ✅ PASSED |
+| Process stability | No crashes in 10 interactions | ✅ Stable | ✅ PASSED |
+
+**Outcome**: POC validated architecture but latency makes ACP non-viable for real-time chat.
 
 ### Out of Scope
 
@@ -586,3 +588,42 @@ After POC completion, evaluate:
 | Agent SDK | Claude Agent SDK - Anthropic's Python SDK for building agents |
 | MCP | Model Context Protocol - Anthropic's tool/resource protocol |
 | Side Panel | Chrome extension UI that appears alongside the webpage |
+
+---
+
+## POC Completion Summary
+
+**Date Completed**: 2026-01-25
+
+### Results
+
+The POC was **successfully completed** and fully functional. All components worked as designed:
+
+✅ **Chrome Extension** - Click mode, DOM capture, side panel UI, WebSocket client
+✅ **Node.js Server** - WebSocket server, subprocess management, streaming
+✅ **End-to-End Flow** - Element selection → chat → response
+
+However, latency measurements revealed a critical issue:
+
+❌ **First token latency: ~60 seconds** (vs <3s target)
+
+### Decision
+
+Based on POC data, **Agent SDK approach selected** over ACP. See [ADR-0001](../../docs/decisions/ADR-0001-use-agent-sdk-over-acp.md) for full rationale.
+
+### Artifacts
+
+- **POC Code**: Preserved in `poc/` directory
+- **Results**: [POC-RESULTS.md](../../poc/POC-RESULTS.md)
+- **Decision**: [ADR-0001](../../docs/decisions/ADR-0001-use-agent-sdk-over-acp.md)
+
+### Key Learnings
+
+1. Subprocess spawn overhead is significant (~60s for Claude Code initialization)
+2. In-process agent (Agent SDK) eliminates this overhead
+3. WebSocket + side panel architecture is solid and reusable
+4. Chrome extension patterns validated for production use
+
+### Next Steps
+
+Proceed with Agent SDK implementation using learnings from this POC.

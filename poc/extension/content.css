@@ -1,0 +1,35 @@
+/* Click mode overlay */
+.ui-chatter-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 999999;
+  cursor: crosshair;
+  pointer-events: none;
+}
+
+.ui-chatter-overlay.active {
+  pointer-events: all;
+}
+
+/* Hover highlight */
+.ui-chatter-highlight {
+  outline: 3px solid #3b82f6 !important;
+  outline-offset: 2px !important;
+  cursor: pointer !important;
+}
+
+/* Click indicator */
+.ui-chatter-clicked {
+  outline: 3px solid #10b981 !important;
+  outline-offset: 2px !important;
+  animation: ui-chatter-pulse 0.5s ease-out;
+}
+
+@keyframes ui-chatter-pulse {
+  0% { outline-offset: 2px; }
+  50% { outline-offset: 6px; }
+  100% { outline-offset: 2px; }
+}
