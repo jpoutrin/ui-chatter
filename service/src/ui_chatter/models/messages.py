@@ -5,6 +5,11 @@ from pydantic import BaseModel, Field
 
 from .context import CapturedContext
 
+# Valid permission modes
+PermissionMode = Literal[
+    "acceptEdits", "bypassPermissions", "default", "delegate", "dontAsk", "plan"
+]
+
 
 class ChatRequest(BaseModel):
     """Chat request from extension."""
@@ -40,3 +45,26 @@ class ErrorMessage(BaseModel):
     code: str = Field(..., description="Error code")
     message: str = Field(..., description="Human-readable error message")
     detail: Optional[str] = Field(None, description="Additional error details")
+
+
+class HandshakeMessage(BaseModel):
+    """Initial connection with permission mode."""
+
+    type: Literal["handshake"] = "handshake"
+    permission_mode: PermissionMode = Field(
+        "plan", description="Permission mode for Claude CLI"
+    )
+
+
+class UpdatePermissionModeMessage(BaseModel):
+    """Runtime permission mode update."""
+
+    type: Literal["update_permission_mode"] = "update_permission_mode"
+    mode: PermissionMode = Field(..., description="New permission mode")
+
+
+class PermissionModeUpdatedMessage(BaseModel):
+    """Acknowledgment of permission mode update."""
+
+    type: Literal["permission_mode_updated"] = "permission_mode_updated"
+    mode: PermissionMode = Field(..., description="Current permission mode")

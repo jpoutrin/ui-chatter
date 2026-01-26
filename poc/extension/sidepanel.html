@@ -30,6 +30,12 @@
       align-items: center;
     }
 
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
     .title {
       font-weight: 600;
       font-size: 16px;
@@ -41,6 +47,37 @@
       gap: 6px;
       font-size: 12px;
       color: #6b7280;
+    }
+
+    .mode-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      color: #6b7280;
+    }
+
+    .mode-badge {
+      padding: 4px 12px;
+      border-radius: 6px;
+      font-weight: 500;
+      font-size: 12px;
+      transition: all 0.2s;
+    }
+
+    .mode-badge.plan {
+      background: #dbeafe;
+      color: #1e40af;
+    }
+
+    .mode-badge.bypass {
+      background: #fef3c7;
+      color: #92400e;
+    }
+
+    .mode-hint {
+      font-size: 11px;
+      color: #9ca3af;
     }
 
     .status-indicator {
@@ -166,10 +203,16 @@
 </head>
 <body>
   <div class="header">
-    <div class="title">UI Chatter POC</div>
-    <div class="status">
-      <span class="status-indicator" id="statusIndicator"></span>
-      <span id="statusText">Not connected</span>
+    <div class="header-left">
+      <div class="title">UI Chatter POC</div>
+      <div class="status">
+        <span class="status-indicator" id="statusIndicator"></span>
+        <span id="statusText">Not connected</span>
+      </div>
+    </div>
+    <div class="mode-indicator">
+      <span class="mode-badge" id="modeBadge">plan mode on</span>
+      <span class="mode-hint">(Shift+Tab to cycle)</span>
     </div>
   </div>
 

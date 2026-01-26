@@ -142,6 +142,22 @@ class SessionStore:
             )
             await db.commit()
 
+    async def update_permission_mode(self, session_id: str, mode: str) -> None:
+        """Update permission mode for a session."""
+        await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE sessions
+                SET permission_mode = ?, last_activity = ?
+                WHERE session_id = ?
+                """,
+                (mode, datetime.now().isoformat(), session_id),
+            )
+            await db.commit()
+            logger.info(f"Updated permission mode to {mode} for session {session_id}")
+
     async def delete_session(self, session_id: str) -> None:
         """Delete session metadata."""
         await self.initialize()

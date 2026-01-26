@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     # Performance
     WORKER_COUNT: int = 1  # Uvicorn workers
 
+    # WebSocket keepalive configuration
+    WS_PING_INTERVAL: int = 25          # Application ping interval (seconds)
+    WS_PING_TIMEOUT: int = 30           # Application pong timeout (seconds)
+    WS_RECEIVE_TIMEOUT: int = 300       # Max wait for any message (seconds)
+    WS_PROTOCOL_PING_INTERVAL: float = 15.0  # Protocol ping interval (seconds)
+    WS_PROTOCOL_PING_TIMEOUT: float = 10.0   # Protocol pong timeout (seconds)
+
 
 # Global settings instance
 settings = Settings()

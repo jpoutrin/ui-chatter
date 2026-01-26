@@ -205,17 +205,26 @@ async def websocket_endpoint(websocket: WebSocket):
 
         logger.info(f"Session {session_id} ready for messages")
 
+        # Start background receiver task (processes pongs immediately)
+        connection_manager.start_receiver(session_id, websocket, WS_RECEIVE_TIMEOUT)
+
         # Start ping keepalive task
         connection_manager.start_ping(session_id)
 
-        # Main message loop
+        # Main message loop - consume from queue
         while True:
             try:
-                # Receive with timeout to detect dead connections
+                # Receive from queue (pongs are handled by receiver task)
                 data = await asyncio.wait_for(
-                    websocket.receive_json(),
+                    connection_manager.receive_message(session_id),
                     timeout=WS_RECEIVE_TIMEOUT
                 )
+
+                # Handle connection closed or error
+                if data is None:
+                    logger.info(f"[WS] {session_id[:8]}... | Connection closed by receiver")
+                    break
+
             except asyncio.TimeoutError:
                 logger.warning(
                     f"[WS] {session_id[:8]}... | No message in {WS_RECEIVE_TIMEOUT}s, "
@@ -227,11 +236,7 @@ async def websocket_endpoint(websocket: WebSocket):
             msg_type = data.get("type", "unknown")
             logger.debug(f"[WS IN] {session_id[:8]}... | {msg_type} | {json.dumps(data)[:200]}")
 
-            if data["type"] == "pong":
-                # Handle pong response to ping (keepalive)
-                connection_manager.mark_pong_received(session_id)
-
-            elif data["type"] == "update_permission_mode":
+            if data["type"] == "update_permission_mode":
                 # Handle permission mode update
                 try:
                     update_msg = UpdatePermissionModeMessage(**data)

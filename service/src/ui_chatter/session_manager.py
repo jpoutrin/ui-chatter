@@ -17,12 +17,19 @@ logger = logging.getLogger(__name__)
 class AgentSession:
     """Represents a single agent session with state."""
 
-    def __init__(self, session_id: str, project_path: str, backend: AgentBackend):
+    def __init__(
+        self,
+        session_id: str,
+        project_path: str,
+        backend: AgentBackend,
+        permission_mode: str = "plan"
+    ):
         self.session_id = session_id
         self.project_path = project_path
         self.created_at = datetime.now()
         self.last_activity = datetime.now()
         self.backend = backend
+        self.permission_mode = permission_mode
         self.first_message_sent = False  # Track if first message has been sent
 
     def mark_first_message_sent(self) -> None:
@@ -72,23 +79,36 @@ class SessionManager:
 
         logger.info(f"Initialized SessionManager with backend: {backend_strategy}, project: {project_path}")
 
-    def _create_backend(self, session_id: str, project_path: str) -> AgentBackend:
+    def _create_backend(
+        self,
+        session_id: str,
+        project_path: str,
+        permission_mode: Optional[str] = None
+    ) -> AgentBackend:
         """Create appropriate backend based on strategy."""
+        mode = permission_mode or self.permission_mode
+
         if self.backend_strategy == "anthropic-sdk":
             logger.info("Creating Anthropic SDK backend")
             return AnthropicSDKBackend(project_path, api_key=self.api_key)
         elif self.backend_strategy == "claude-cli":
-            logger.info("Creating Claude Code CLI backend")
+            logger.info(f"Creating Claude Code CLI backend with permission mode: {mode}")
             return ClaudeCodeCLIBackend(
-                project_path, session_id=session_id, permission_mode=self.permission_mode
+                project_path, session_id=session_id, permission_mode=mode
             )
         else:
             raise ValueError(f"Unknown backend strategy: {self.backend_strategy}")
 
-    async def create_session(self, session_id: str) -> AgentSession:
+    async def create_session(
+        self,
+        session_id: str,
+        permission_mode: Optional[str] = None
+    ) -> AgentSession:
         """Create new isolated agent session with configured backend."""
-        backend = self._create_backend(session_id, self.project_path)
-        session = AgentSession(session_id, self.project_path, backend)
+        mode = permission_mode or self.permission_mode
+
+        backend = self._create_backend(session_id, self.project_path, permission_mode=mode)
+        session = AgentSession(session_id, self.project_path, backend, permission_mode=mode)
         self.sessions[session_id] = session
 
         # Persist metadata to SQLite
@@ -97,12 +117,13 @@ class SessionManager:
                 session_id=session_id,
                 project_path=self.project_path,
                 backend_type=self.backend_strategy,
-                permission_mode=self.permission_mode if self.backend_strategy == "claude-cli" else None,
+                permission_mode=mode if self.backend_strategy == "claude-cli" else None,
                 created_at=session.created_at,
             )
 
         logger.info(
-            f"Created session: {session_id} with {self.backend_strategy} backend for project: {self.project_path}"
+            f"Created session: {session_id} with {self.backend_strategy} backend "
+            f"(permission mode: {mode}) for project: {self.project_path}"
         )
         return session
 
@@ -195,11 +216,23 @@ class SessionManager:
                 if session_id in self.sessions:
                     continue
 
-                # Reconstruct backend
-                backend = self._create_backend(session_id, session_data["project_path"])
+                # Get permission mode from stored data or use default
+                permission_mode = session_data.get("permission_mode") or self.permission_mode
+
+                # Reconstruct backend with stored permission mode
+                backend = self._create_backend(
+                    session_id,
+                    session_data["project_path"],
+                    permission_mode=permission_mode
+                )
 
                 # Create session object
-                session = AgentSession(session_id, session_data["project_path"], backend)
+                session = AgentSession(
+                    session_id,
+                    session_data["project_path"],
+                    backend,
+                    permission_mode=permission_mode
+                )
                 session.created_at = datetime.fromisoformat(session_data["created_at"])
                 session.last_activity = datetime.fromisoformat(session_data["last_activity"])
                 session.first_message_sent = bool(session_data["first_message_sent"])
@@ -222,3 +255,25 @@ class SessionManager:
 
         if self.session_store:
             await self.session_store.mark_first_message_sent(session_id)
+
+    async def update_permission_mode(self, session_id: str, new_mode: str) -> None:
+        """Update permission mode for existing session."""
+        session = self.sessions.get(session_id)
+        if not session:
+            raise ValueError(f"Session {session_id} not found")
+
+        # Update session state
+        session.permission_mode = new_mode
+
+        # Recreate backend with new permission mode
+        session.backend = self._create_backend(
+            session_id,
+            self.project_path,
+            permission_mode=new_mode
+        )
+
+        # Persist change to database
+        if self.session_store:
+            await self.session_store.update_permission_mode(session_id, new_mode)
+
+        logger.info(f"Updated permission mode to {new_mode} for session {session_id}")

@@ -2,16 +2,29 @@
 const WS_URL = 'ws://localhost:3456/ws';
 let ws = null;
 let reconnectTimer = null;
+let currentPermissionMode = 'plan';
 
 // Connect to WebSocket server
-function connect() {
+async function connect() {
   if (ws?.readyState === WebSocket.OPEN) return;
 
   console.log('Connecting to server...');
   ws = new WebSocket(WS_URL);
 
-  ws.onopen = () => {
+  ws.onopen = async () => {
     console.log('Connected to POC server');
+
+    // Retrieve current permission mode from storage
+    const result = await chrome.storage.local.get(['permissionMode']);
+    currentPermissionMode = result.permissionMode || 'plan';
+
+    // Send handshake with permission mode
+    const handshakeMsg = {
+      type: 'handshake',
+      permission_mode: currentPermissionMode
+    };
+    console.log('[WS OUT] handshake', handshakeMsg);
+    ws.send(JSON.stringify(handshakeMsg));
     broadcastStatus('connected');
   };
 
@@ -29,6 +42,17 @@ function connect() {
 
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
+
+    // Handle ping/pong keepalive
+    if (message.type === 'ping') {
+      console.log('[WS] Received ping, sending pong');
+      ws.send(JSON.stringify({ type: 'pong' }));
+      return;
+    }
+
+    // Debug log all incoming messages
+    console.log('[WS IN]', message.type, message);
+
     // Forward to side panel (ignore if not open)
     try {
       chrome.runtime.sendMessage({
@@ -86,14 +110,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.type === 'send_chat') {
     // Send chat message to server
     if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
+      const chatMsg = {
         type: 'chat',
         context: message.context,
         message: message.message
-      }));
+      };
+      console.log('[WS OUT] chat', chatMsg);
+      ws.send(JSON.stringify(chatMsg));
     } else {
       console.error('WebSocket not connected');
     }
+  } else if (message.type === 'permission_mode_changed') {
+    // Update current mode and notify server
+    currentPermissionMode = message.mode;
+
+    if (ws?.readyState === WebSocket.OPEN) {
+      const modeMsg = {
+        type: 'update_permission_mode',
+        mode: message.mode
+      };
+      console.log('[WS OUT] update_permission_mode', modeMsg);
+      ws.send(JSON.stringify(modeMsg));
+    }
+
+    sendResponse({ success: true });
+    return true;
   } else if (message.type === 'get_connection_status') {
     sendResponse({
       connected: ws?.readyState === WebSocket.OPEN

@@ -1,6 +1,7 @@
 // Side panel script
 let currentContext = null;
 let isConnected = false;
+let permissionMode = 'plan'; // Default mode
 
 const elements = {
   statusIndicator: document.getElementById('statusIndicator'),
@@ -10,7 +11,22 @@ const elements = {
   messages: document.getElementById('messages'),
   messageInput: document.getElementById('messageInput'),
   sendBtn: document.getElementById('sendBtn'),
-  selectBtn: document.getElementById('selectBtn')
+  selectBtn: document.getElementById('selectBtn'),
+  modeBadge: document.getElementById('modeBadge')
+};
+
+// Mode configurations
+const MODE_CONFIG = {
+  plan: {
+    label: 'plan mode on',
+    cssClass: 'plan',
+    description: 'Plan changes before executing'
+  },
+  bypassPermissions: {
+    label: 'bypass mode on',
+    cssClass: 'bypass',
+    description: 'Execute changes without prompts'
+  }
 };
 
 // Listen for messages from background script
@@ -157,6 +173,56 @@ elements.sendBtn.addEventListener('click', sendMessage);
 elements.messageInput.addEventListener('keypress', (e) => {
   if (e.key === 'Enter') sendMessage();
 });
+
+// Permission mode management
+async function initializeMode() {
+  const result = await chrome.storage.local.get(['permissionMode']);
+  permissionMode = result.permissionMode || 'plan';
+  updateModeDisplay();
+}
+
+function updateModeDisplay() {
+  const config = MODE_CONFIG[permissionMode];
+  if (!config) {
+    console.error('Unknown permission mode:', permissionMode);
+    return;
+  }
+
+  elements.modeBadge.textContent = config.label;
+  elements.modeBadge.className = `mode-badge ${config.cssClass}`;
+  elements.modeBadge.title = config.description;
+}
+
+function togglePermissionMode() {
+  permissionMode = permissionMode === 'plan' ? 'bypassPermissions' : 'plan';
+
+  // Save to storage
+  chrome.storage.local.set({ permissionMode });
+
+  // Update UI
+  updateModeDisplay();
+
+  // Notify background service
+  chrome.runtime.sendMessage({
+    type: 'permission_mode_changed',
+    mode: permissionMode
+  });
+
+  // Show feedback message
+  const config = MODE_CONFIG[permissionMode];
+  addMessage('status', `Switched to ${config.label}`);
+}
+
+// Keyboard handler for Shift+Tab
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab' && e.shiftKey) {
+    e.preventDefault();
+    togglePermissionMode();
+  }
+});
+
+// Initialize mode on load
+initializeMode();
 
 // Check initial connection status
 chrome.runtime.sendMessage({ type: 'get_connection_status' }, (response) => {
