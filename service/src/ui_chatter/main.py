@@ -1,5 +1,7 @@
 """Main FastAPI application with WebSocket support."""
 
+import asyncio
+import json
 import logging
 import os
 import uuid
@@ -10,7 +12,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 
 from .config import settings
 from .logging_config import setup_logging
-from .models.messages import ChatRequest
+from .models.messages import (
+    ChatRequest,
+    HandshakeMessage,
+    UpdatePermissionModeMessage,
+    PermissionModeUpdatedMessage,
+)
 from .screenshot_store import ScreenshotStore
 from .session_manager import SessionManager
 from .session_store import SessionStore
@@ -20,6 +27,9 @@ from .websocket import ConnectionManager
 # Setup logging
 setup_logging(level=settings.LOG_LEVEL, debug=settings.DEBUG)
 logger = logging.getLogger(__name__)
+
+# WebSocket receive timeout - allow long AI thinking periods
+WS_RECEIVE_TIMEOUT = settings.WS_RECEIVE_TIMEOUT
 
 # Global managers (initialized in lifespan)
 connection_manager: ConnectionManager
@@ -42,7 +52,11 @@ async def lifespan(app: FastAPI):
     # Get permission mode from environment or use settings default
     permission_mode = os.environ.get("PERMISSION_MODE", settings.PERMISSION_MODE)
 
-    connection_manager = ConnectionManager(max_connections=settings.MAX_CONNECTIONS)
+    connection_manager = ConnectionManager(
+        max_connections=settings.MAX_CONNECTIONS,
+        ping_interval=settings.WS_PING_INTERVAL,
+        ping_timeout=settings.WS_PING_TIMEOUT
+    )
 
     # Initialize session storage
     session_store = SessionStore(project_path=project_path)
@@ -166,16 +180,83 @@ async def websocket_endpoint(websocket: WebSocket):
         # Connect with origin validation
         await connection_manager.connect(session_id, websocket)
 
-        # Create agent session - session manager has project path
-        session = await session_manager.create_session(session_id)
+        # Wait for handshake with permission mode
+        handshake_data = await websocket.receive_json()
+
+        # Debug logging for incoming message
+        logger.debug(
+            f"[WS IN] {session_id[:8]}... | handshake | {json.dumps(handshake_data)[:200]}"
+        )
+
+        permission_mode = "plan"  # Default
+        if handshake_data.get("type") == "handshake":
+            try:
+                handshake = HandshakeMessage(**handshake_data)
+                permission_mode = handshake.permission_mode
+                logger.info(f"Received handshake with permission mode: {permission_mode}")
+            except Exception as e:
+                logger.warning(f"Invalid handshake, using default mode: {e}")
+
+        # Create agent session with specified permission mode
+        session = await session_manager.create_session(
+            session_id,
+            permission_mode=permission_mode
+        )
 
         logger.info(f"Session {session_id} ready for messages")
 
+        # Start ping keepalive task
+        connection_manager.start_ping(session_id)
+
         # Main message loop
         while True:
-            data = await websocket.receive_json()
+            try:
+                # Receive with timeout to detect dead connections
+                data = await asyncio.wait_for(
+                    websocket.receive_json(),
+                    timeout=WS_RECEIVE_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"[WS] {session_id[:8]}... | No message in {WS_RECEIVE_TIMEOUT}s, "
+                    "closing"
+                )
+                break
 
-            if data["type"] == "chat":
+            # Debug logging for incoming messages
+            msg_type = data.get("type", "unknown")
+            logger.debug(f"[WS IN] {session_id[:8]}... | {msg_type} | {json.dumps(data)[:200]}")
+
+            if data["type"] == "pong":
+                # Handle pong response to ping (keepalive)
+                connection_manager.mark_pong_received(session_id)
+
+            elif data["type"] == "update_permission_mode":
+                # Handle permission mode update
+                try:
+                    update_msg = UpdatePermissionModeMessage(**data)
+                    await session_manager.update_permission_mode(
+                        session_id, update_msg.mode
+                    )
+
+                    # Send acknowledgment
+                    ack = PermissionModeUpdatedMessage(mode=update_msg.mode)
+                    await connection_manager.send_message(
+                        session_id, ack.model_dump()
+                    )
+                    logger.info(f"Permission mode updated to {update_msg.mode}")
+                except Exception as e:
+                    logger.error(f"Error updating permission mode: {e}")
+                    await connection_manager.send_message(
+                        session_id,
+                        {
+                            "type": "error",
+                            "code": "permission_mode_update_failed",
+                            "message": str(e),
+                        },
+                    )
+
+            elif data["type"] == "chat":
                 # Parse chat request
                 try:
                     chat_request = ChatRequest(**data)
