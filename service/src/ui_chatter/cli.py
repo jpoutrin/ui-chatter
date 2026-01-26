@@ -5,6 +5,7 @@ import os
 import signal
 import sys
 from pathlib import Path
+from typing import Optional
 
 import httpx
 import typer
@@ -41,10 +42,11 @@ def serve(
         "-b",
         help="Backend strategy: 'claude-cli' (uses Claude Code auth) or 'anthropic-sdk' (needs API key)",
     ),
-    permission_mode: str = typer.Option(
-        "bypassPermissions",
+    permission_mode: Optional[str] = typer.Option(
+        None,
         "--permission-mode",
-        help="Permission mode for Claude CLI: acceptEdits, bypassPermissions, default, delegate, dontAsk, plan",
+        help="[DEPRECATED] Permission mode for Claude CLI. Use extension UI instead. "
+        "Valid values: acceptEdits, bypassPermissions, default, delegate, dontAsk, plan",
     ),
     port: int = typer.Option(3456, "--port", help="WebSocket port"),
     host: str = typer.Option("localhost", "--host", help="Bind address"),
@@ -70,14 +72,34 @@ def serve(
         )
         raise typer.Exit(1)
 
-    # Validate permission mode
+    # Set environment variables BEFORE importing settings to ensure they're picked up
+    os.environ["UI_CHATTER_PROJECT_PATH"] = str(project_path)
+    os.environ["BACKEND_STRATEGY"] = backend
+    os.environ["DEBUG"] = "true" if debug else "false"
+
+    # Handle permission mode (deprecated CLI flag)
     valid_modes = ["acceptEdits", "bypassPermissions", "default", "delegate", "dontAsk", "plan"]
-    if permission_mode not in valid_modes:
+    if permission_mode is not None:
+        # Validate if provided
+        if permission_mode not in valid_modes:
+            console.print(
+                f"[red]Error:[/red] Invalid permission mode: {permission_mode}. "
+                f"Use one of: {', '.join(valid_modes)}"
+            )
+            raise typer.Exit(1)
+
+        # Show deprecation warning
         console.print(
-            f"[red]Error:[/red] Invalid permission mode: {permission_mode}. "
-            f"Use one of: {', '.join(valid_modes)}"
+            "[yellow]Warning:[/yellow] --permission-mode flag is deprecated. "
+            "Permission mode is now managed via the browser extension UI (Shift+Tab to toggle)."
         )
-        raise typer.Exit(1)
+    else:
+        # Use default from settings
+        from .config import settings
+        permission_mode = settings.PERMISSION_MODE
+
+    # Update permission mode env var after it's determined
+    os.environ["PERMISSION_MODE"] = permission_mode
 
     # Check if already running
     if asyncio.run(check_service_running(port)):
@@ -103,7 +125,11 @@ def serve(
 
     # Display startup info
     backend_desc = "Claude Code CLI" if backend == "claude-cli" else "Anthropic SDK"
-    permission_info = f"\n🔒 Permission Mode: {permission_mode}" if backend == "claude-cli" else ""
+    permission_info = (
+        f"\n🔒 Default Permission Mode: {permission_mode} (can be changed via extension)"
+        if backend == "claude-cli"
+        else ""
+    )
     console.print(
         Panel.fit(
             f"[bold]UI Chatter Service[/bold]\n\n"
@@ -115,13 +141,9 @@ def serve(
         )
     )
 
-    # Set environment variables for the service
-    os.environ["UI_CHATTER_PROJECT_PATH"] = str(project_path)
-    os.environ["BACKEND_STRATEGY"] = backend
-    os.environ["PERMISSION_MODE"] = permission_mode
-    os.environ["DEBUG"] = "true" if debug else "false"
+    # Start Uvicorn with WebSocket keepalive
+    from .config import settings as ws_settings
 
-    # Start Uvicorn
     uvicorn.run(
         "ui_chatter.main:app",
         host=host,
@@ -129,6 +151,10 @@ def serve(
         log_level="debug" if debug else "info",
         reload=reload,
         access_log=debug,
+        # WebSocket keepalive - protocol-level pings
+        ws_ping_interval=ws_settings.WS_PROTOCOL_PING_INTERVAL,
+        ws_ping_timeout=ws_settings.WS_PROTOCOL_PING_TIMEOUT,
+        timeout_keep_alive=120,  # HTTP keepalive 2min
     )
 
 
