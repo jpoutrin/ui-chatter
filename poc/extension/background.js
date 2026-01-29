@@ -4,6 +4,42 @@ let ws = null;
 let reconnectTimer = null;
 let currentPermissionMode = 'plan';
 
+// Editor protocol builders
+const EDITOR_PROTOCOLS = {
+  vscode: (filePath, lineStart) => {
+    const lineNum = lineStart || 1;
+    return `vscode://file${filePath}:${lineNum}:1`;
+  },
+
+  cursor: (filePath, lineStart) => {
+    const lineNum = lineStart || 1;
+    return `cursor://file${filePath}:${lineNum}:1`;
+  },
+
+  webstorm: (filePath, lineStart) => {
+    const lineParam = lineStart ? `&line=${lineStart}` : '';
+    return `webstorm://open?file=${filePath}${lineParam}`;
+  },
+
+  sublime: (filePath, lineStart) => {
+    const lineNum = lineStart ? `:${lineStart}` : '';
+    return `subl://open?url=file://${filePath}${lineNum}`;
+  },
+
+  vim: (filePath, lineStart) => {
+    // Fallback to VS Code for MVP
+    return EDITOR_PROTOCOLS.vscode(filePath, lineStart);
+  }
+};
+
+function normalizePathForUrl(filePath) {
+  // Windows: Convert C:\path to /C:/path
+  if (/^[A-Z]:/.test(filePath)) {
+    return '/' + filePath.replace(/\\/g, '/');
+  }
+  return filePath;
+}
+
 // Connect to WebSocket server
 async function connect() {
   if (ws?.readyState === WebSocket.OPEN) return;
@@ -135,11 +171,69 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     sendResponse({ success: true });
     return true;
+  } else if (message.type === 'retry_with_permission') {
+    // User clicked "Allow and Retry" button
+    if (ws?.readyState === WebSocket.OPEN) {
+      const retryMsg = {
+        type: 'retry_with_permission'
+      };
+      console.log('[WS OUT] retry_with_permission', retryMsg);
+      ws.send(JSON.stringify(retryMsg));
+    } else {
+      console.error('WebSocket not connected');
+    }
+    sendResponse({ success: true });
+    return true;
+  } else if (message.type === 'cancel_permission_request') {
+    // User clicked "Cancel" button
+    if (ws?.readyState === WebSocket.OPEN) {
+      const cancelMsg = {
+        type: 'cancel_permission_request'
+      };
+      console.log('[WS OUT] cancel_permission_request', cancelMsg);
+      ws.send(JSON.stringify(cancelMsg));
+    }
+    sendResponse({ success: true });
+    return true;
   } else if (message.type === 'get_connection_status') {
     sendResponse({
       connected: ws?.readyState === WebSocket.OPEN
     });
     return true; // Keep channel open for async response
+  } else if (message.action === 'openFile') {
+    // Open file in editor with dynamic protocol support
+    chrome.storage.local.get(['preferredEditor', 'projectPath'], (result) => {
+      const editor = result.preferredEditor || 'vscode';
+      const projectPath = result.projectPath || '';
+      const filePath = message.filePath;
+      const lineStart = message.lineStart;
+
+      // Ensure absolute path
+      const absolutePath = filePath.startsWith('/') || /^[A-Z]:/.test(filePath)
+        ? filePath
+        : (projectPath ? `${projectPath}/${filePath}` : filePath);
+
+      // Normalize Windows paths
+      const normalizedPath = normalizePathForUrl(absolutePath);
+
+      // Build editor URL
+      const editorUrlBuilder = EDITOR_PROTOCOLS[editor] || EDITOR_PROTOCOLS.vscode;
+      const editorUrl = editorUrlBuilder(normalizedPath, lineStart);
+
+      console.log(`Opening file in ${editor}:`, editorUrl);
+
+      // Open in new tab (triggers editor protocol)
+      chrome.tabs.create({ url: editorUrl, active: false }).then(tab => {
+        setTimeout(() => {
+          chrome.tabs.remove(tab.id).catch(() => {});
+        }, 500);
+      }).catch(err => {
+        console.error('Failed to open file:', err);
+      });
+    });
+
+    sendResponse({ success: true });
+    return true;
   }
 });
 
