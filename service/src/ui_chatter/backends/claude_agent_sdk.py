@@ -1,12 +1,19 @@
 """Claude Agent SDK backend - uses subscription auth from ~/.claude/config."""
 
+import asyncio
 import logging
+import time
+import uuid
 from typing import AsyncGenerator, Optional
 
 from claude_agent_sdk import query, ClaudeAgentOptions
 
 from .base import AgentBackend
 from ..models.context import CapturedContext
+from ..models.messages import (
+    ToolActivity, ToolActivityStatus,
+    StreamControl, StreamControlAction
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,21 +50,32 @@ class ClaudeAgentSDKBackend(AgentBackend):
         message: str,
         is_first_message: bool = False,
         screenshot_path: Optional[str] = None,
+        cancel_event: Optional[asyncio.Event] = None,
     ) -> AsyncGenerator[dict, None]:
         """
-        Stream response using Claude Agent SDK.
+        Stream response using Claude Agent SDK with multi-channel protocol.
 
         Args:
             context: Captured UI context
             message: User's message
             is_first_message: Ignored for Agent SDK (stateless)
             screenshot_path: Optional path to screenshot file
+            cancel_event: Optional event to signal cancellation
 
         Yields:
-            dict: Response chunks or error messages
+            dict: Multi-channel messages (response_chunk, tool_activity, stream_control)
         """
-        logger.info(f"[AGENT SDK] handle_chat called with message: {message[:100]}")
+        stream_id = str(uuid.uuid4())
+        start_time = time.time()
+        tool_count = 0
+
+        logger.info(f"[AGENT SDK] handle_chat called with message: {message[:100]}, stream_id: {stream_id}")
         try:
+            # Signal stream start
+            yield StreamControl(
+                action=StreamControlAction.STARTED,
+                stream_id=stream_id
+            ).model_dump()
             # Build prompt with context
             prompt = self._build_prompt(context, message, screenshot_path)
 
@@ -82,6 +100,16 @@ class ClaudeAgentSDKBackend(AgentBackend):
                     permission_mode=self.permission_mode,
                 )
             ):
+                # Check for cancellation
+                if cancel_event and cancel_event.is_set():
+                    logger.info(f"[AGENT SDK] Stream {stream_id} cancelled by user")
+                    yield StreamControl(
+                        action=StreamControlAction.CANCELLED,
+                        stream_id=stream_id,
+                        reason="user_request"
+                    ).model_dump()
+                    return
+
                 logger.info(f"[AGENT SDK] Received message from SDK: {type(msg)}")
 
                 # Debug: inspect message class name
@@ -96,27 +124,77 @@ class ClaudeAgentSDKBackend(AgentBackend):
 
                 if msg_type == "ResultMessage":
                     # Final message with result
+                    duration_ms = int((time.time() - start_time) * 1000)
+
                     if is_debug():
-                        logger.debug("CLAUDE AGENT SDK: Received final message (done=True)")
+                        logger.debug(f"CLAUDE AGENT SDK: Received final message (done=True), duration: {duration_ms}ms")
+
                     yield {"type": "response_chunk", "content": "", "done": True}
 
+                    # Emit completion control message
+                    yield StreamControl(
+                        action=StreamControlAction.COMPLETED,
+                        stream_id=stream_id,
+                        metadata={
+                            "duration_ms": duration_ms,
+                            "tools_used": tool_count
+                        }
+                    ).model_dump()
+
                 elif msg_type == "AssistantMessage":
-                    # Extract text from content blocks
-                    content = self._extract_text_content(msg)
+                    # Process content blocks (text and tool use)
+                    for block in msg.content:
+                        block_type = block.__class__.__name__
 
-                    # Yield chunk even if empty (maintains streaming flow)
-                    # Empty chunks can occur when Claude uses tools without text
-                    logger.debug(f"[AGENT SDK] Yielding assistant chunk: {len(content)} chars")
+                        if block_type == "TextBlock":
+                            # Yield text content
+                            logger.debug(f"[AGENT SDK] Yielding text chunk: {len(block.text)} chars")
 
-                    # Debug logging: show response chunks
-                    if is_debug() and content:
-                        logger.debug(f"CLAUDE AGENT SDK OUTPUT CHUNK: {content[:100]}{'...' if len(content) > 100 else ''}")
+                            if is_debug() and block.text:
+                                logger.debug(f"CLAUDE AGENT SDK OUTPUT CHUNK: {block.text[:100]}{'...' if len(block.text) > 100 else ''}")
 
-                    yield {
-                        "type": "response_chunk",
-                        "content": content,
-                        "done": False
-                    }
+                            yield {
+                                "type": "response_chunk",
+                                "content": block.text,
+                                "done": False
+                            }
+
+                        elif block_type == "ToolUseBlock":
+                            # NEW: Track tool execution instead of discarding
+                            tool_count += 1
+                            tool_id = block.id
+                            tool_name = block.name
+
+                            logger.info(f"[AGENT SDK] Tool execution started: {tool_name} (id: {tool_id})")
+
+                            yield ToolActivity(
+                                tool_id=tool_id,
+                                tool_name=tool_name,
+                                status=ToolActivityStatus.EXECUTING,
+                                input_summary=self._summarize_tool_input(tool_name, block.input),
+                            ).model_dump()
+
+                elif msg_type == "ToolResultMessage":
+                    # Track tool completion
+                    tool_id = msg.tool_use_id if hasattr(msg, "tool_use_id") else "unknown"
+                    is_error = msg.is_error if hasattr(msg, "is_error") else False
+
+                    logger.info(f"[AGENT SDK] Tool execution completed: {tool_id} (error: {is_error})")
+
+                    yield ToolActivity(
+                        tool_id=tool_id,
+                        tool_name="",  # SDK doesn't provide tool name in result
+                        status=ToolActivityStatus.FAILED if is_error else ToolActivityStatus.COMPLETED,
+                        output_summary=self._summarize_tool_output(msg.content) if hasattr(msg, "content") else None,
+                    ).model_dump()
+
+        except asyncio.CancelledError:
+            logger.info(f"[AGENT SDK] Stream {stream_id} cancelled via asyncio")
+            yield StreamControl(
+                action=StreamControlAction.CANCELLED,
+                stream_id=stream_id,
+                reason="task_cancelled"
+            ).model_dump()
 
         except Exception as e:
             logger.error(f"[AGENT SDK] Chat error: {e}", exc_info=True)
@@ -136,49 +214,66 @@ class ClaudeAgentSDKBackend(AgentBackend):
                 "message": error_message
             }
 
-    def _extract_text_content(self, message) -> str:
+    def _summarize_tool_input(self, tool_name: str, input_dict: dict) -> str:
         """
-        Extract text from message content blocks.
-
-        According to SDK docs, messages have a .content list containing
-        various block types. Only TextBlock objects have displayable text.
+        Create human-readable summary of tool input.
 
         Args:
-            message: SDK Message object with .content attribute
+            tool_name: Name of the tool being executed
+            input_dict: Tool input parameters
 
         Returns:
-            Concatenated text from all TextBlock objects
+            Abbreviated summary string
         """
-        if not hasattr(message, "content"):
-            logger.warning("[AGENT SDK] Message has no content attribute")
-            return ""
+        if tool_name == "Read":
+            return f"Reading {input_dict.get('file_path', 'file')}"
+        elif tool_name == "Write":
+            return f"Writing {input_dict.get('file_path', 'file')}"
+        elif tool_name == "Edit":
+            return f"Editing {input_dict.get('file_path', 'file')}"
+        elif tool_name == "Bash":
+            cmd = input_dict.get('command', '')
+            return f"Running: {cmd[:50]}{'...' if len(cmd) > 50 else ''}"
+        elif tool_name == "Grep":
+            return f"Searching for \"{input_dict.get('pattern', '')}\""
+        elif tool_name == "Glob":
+            return f"Finding files: {input_dict.get('pattern', '*')}"
+        else:
+            return f"{tool_name} operation"
 
-        text_parts = []
-        for i, block in enumerate(message.content):
-            # Get block type using __class__.__name__
-            block_type = block.__class__.__name__
+    def _summarize_tool_output(self, content) -> Optional[str]:
+        """
+        Create abbreviated summary of tool output.
 
-            logger.debug(f"[AGENT SDK] Block {i}: type={block_type}, has_text={hasattr(block, 'text')}")
+        Args:
+            content: Tool result content (may be string or list of blocks)
 
-            if block_type == "TextBlock":
-                # TextBlock has .text attribute (guaranteed by SDK)
-                text_parts.append(block.text)
-                logger.debug(f"[AGENT SDK] Extracted {len(block.text)} chars from TextBlock")
+        Returns:
+            Abbreviated output summary or None
+        """
+        if not content:
+            return None
 
-            elif block_type == "ToolUseBlock":
-                # ToolUseBlock represents Claude calling a tool
-                # Has .name and .input, but no displayable text
-                logger.debug(f"[AGENT SDK] Skipping ToolUseBlock (tool: {block.name})")
-                continue
+        # Handle string content
+        if isinstance(content, str):
+            if len(content) > 100:
+                return content[:100] + "..."
+            return content
 
-            elif hasattr(block, "text"):
-                # Fallback for unknown block types with text attribute
-                text_parts.append(block.text)
-                logger.warning(f"[AGENT SDK] Unknown block type with text: {block_type}")
+        # Handle list of content blocks
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if hasattr(block, 'text'):
+                    text = block.text
+                    if len(text) > 100:
+                        text_parts.append(text[:100] + "...")
+                    else:
+                        text_parts.append(text)
 
-        result = "".join(text_parts)
-        logger.debug(f"[AGENT SDK] Total extracted: {len(result)} chars")
-        return result
+            return " ".join(text_parts) if text_parts else None
+
+        return None
 
     def _classify_error(self, error: Exception) -> str:
         """Classify error type for appropriate handling."""

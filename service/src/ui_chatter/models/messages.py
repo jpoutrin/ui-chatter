@@ -1,6 +1,8 @@
 """WebSocket message models."""
 
-from typing import Literal, Optional
+from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, Literal, Optional
 from pydantic import BaseModel, Field
 
 from .context import CapturedContext
@@ -68,3 +70,45 @@ class PermissionModeUpdatedMessage(BaseModel):
 
     type: Literal["permission_mode_updated"] = "permission_mode_updated"
     mode: PermissionMode = Field(..., description="Current permission mode")
+
+
+# Multi-channel streaming protocol models
+
+class ToolActivityStatus(str, Enum):
+    """Tool execution status."""
+    PENDING = "pending"
+    EXECUTING = "executing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class ToolActivity(BaseModel):
+    """Real-time tool execution tracking."""
+
+    type: Literal["tool_activity"] = "tool_activity"
+    tool_id: str = Field(..., description="Unique identifier for this tool call")
+    tool_name: str = Field(..., description="Tool name (Read, Write, Edit, Bash, etc.)")
+    status: ToolActivityStatus = Field(..., description="Current status of tool execution")
+    input_summary: Optional[str] = Field(None, description="Abbreviated tool input")
+    output_summary: Optional[str] = Field(None, description="Abbreviated tool output")
+    duration_ms: Optional[int] = Field(None, description="Execution time in milliseconds")
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class StreamControlAction(str, Enum):
+    """Stream lifecycle actions."""
+    STARTED = "started"
+    PAUSED = "paused"
+    RESUMED = "resumed"
+    CANCELLED = "cancelled"
+    COMPLETED = "completed"
+
+
+class StreamControl(BaseModel):
+    """Stream lifecycle control."""
+
+    type: Literal["stream_control"] = "stream_control"
+    action: StreamControlAction = Field(..., description="Stream lifecycle action")
+    stream_id: str = Field(..., description="Unique stream session identifier")
+    reason: Optional[str] = Field(None, description="Reason for state change")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional context")

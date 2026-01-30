@@ -156,6 +156,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else {
       console.error('WebSocket not connected');
     }
+  } else if (message.type === 'cancel_request') {
+    // Cancel current stream
+    if (ws?.readyState === WebSocket.OPEN) {
+      const cancelMsg = {
+        type: 'cancel_request',
+        stream_id: message.stream_id
+      };
+      console.log('[WS OUT] cancel_request', cancelMsg);
+      ws.send(JSON.stringify(cancelMsg));
+    } else {
+      console.error('WebSocket not connected');
+    }
   } else if (message.type === 'permission_mode_changed') {
     // Update current mode and notify server
     currentPermissionMode = message.mode;

@@ -23,6 +23,7 @@ from .session_manager import SessionManager
 from .session_store import SessionStore
 from .session_repository import SessionRepository
 from .websocket import ConnectionManager
+from .stream_controller import StreamController
 
 # Setup logging
 setup_logging(level=settings.LOG_LEVEL, debug=settings.DEBUG)
@@ -35,6 +36,7 @@ WS_RECEIVE_TIMEOUT = settings.WS_RECEIVE_TIMEOUT
 connection_manager: ConnectionManager
 session_manager: SessionManager
 screenshot_store: ScreenshotStore
+stream_controller: StreamController
 
 
 @asynccontextmanager
@@ -43,7 +45,7 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info(f"Starting {settings.PROJECT_NAME}...")
 
-    global connection_manager, session_manager, screenshot_store
+    global connection_manager, session_manager, screenshot_store, stream_controller
 
     # Get project path from environment (set by CLI) or use settings default
     project_path = os.environ.get("UI_CHATTER_PROJECT_PATH", settings.PROJECT_PATH)
@@ -57,6 +59,9 @@ async def lifespan(app: FastAPI):
         ping_interval=settings.WS_PING_INTERVAL,
         ping_timeout=settings.WS_PING_TIMEOUT
     )
+
+    # Initialize stream controller for cancellation support
+    stream_controller = StreamController()
 
     # Initialize session storage
     session_store = SessionStore(project_path=project_path)
@@ -233,7 +238,24 @@ async def websocket_endpoint(websocket: WebSocket):
             msg_type = data.get("type", "unknown")
             logger.debug(f"[WS IN] {session_id[:8]}... | {msg_type} | {json.dumps(data)[:200]}")
 
-            if data["type"] == "update_permission_mode":
+            if data["type"] == "cancel_request":
+                # Handle stream cancellation request
+                stream_id = data.get("stream_id")
+                if stream_id:
+                    success = stream_controller.cancel_stream(stream_id)
+                    await connection_manager.send_message(
+                        session_id,
+                        {
+                            "type": "status",
+                            "status": "cancelled" if success else "error",
+                            "detail": "Stream cancelled" if success else "Stream not found"
+                        }
+                    )
+                    logger.info(f"Cancel request for stream {stream_id}: {'success' if success else 'failed'}")
+                else:
+                    logger.warning("Cancel request without stream_id")
+
+            elif data["type"] == "update_permission_mode":
                 # Handle permission mode update
                 try:
                     update_msg = UpdatePermissionModeMessage(**data)
@@ -285,6 +307,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     except Exception as e:
                         logger.warning(f"Failed to save screenshot: {e}")
 
+                # Create stream with cancellation support
+                # Extract stream_id from first response or generate one
+                current_stream_id = None
+                cancel_event = None
+
                 # Send thinking status
                 await connection_manager.send_message(
                     session_id,
@@ -294,14 +321,28 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Check if this is the first message for this session
                 is_first = session.is_first_message()
 
-                # Stream response from agent backend
+                # Stream response from agent backend with cancellation support
                 async for response in session.backend.handle_chat(
                     chat_request.context,
                     chat_request.message,
                     is_first_message=is_first,
                     screenshot_path=screenshot_path,
+                    cancel_event=cancel_event,
                 ):
+                    # Capture stream_id from first stream_control message
+                    if response.get("type") == "stream_control" and response.get("action") == "started":
+                        current_stream_id = response.get("stream_id")
+                        # Create cancel event for this stream
+                        cancel_event = stream_controller.create_stream(current_stream_id)
+                        logger.info(f"Stream {current_stream_id} started with cancellation support")
+
                     await connection_manager.send_message(session_id, response)
+
+                    # Cleanup stream after completion or cancellation
+                    if response.get("type") == "stream_control" and response.get("action") in ["completed", "cancelled"]:
+                        if current_stream_id:
+                            stream_controller.cleanup_stream(current_stream_id)
+                            logger.info(f"Stream {current_stream_id} cleaned up")
 
                 # Mark first message as sent in both session and store
                 if is_first:
