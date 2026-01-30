@@ -23,6 +23,21 @@ const activeTools = new Map();
 let activeToolPanel = null;
 let currentStreamId = null;
 
+// Markdown library load state
+let librariesLoaded = false;
+
+// Check if markdown libraries are available
+function checkLibraries() {
+  if (typeof marked !== 'undefined' &&
+      typeof DOMPurify !== 'undefined' &&
+      typeof Prism !== 'undefined') {
+    librariesLoaded = true;
+    console.log('✓ Markdown libraries loaded');
+    return true;
+  }
+  return false;
+}
+
 const elements = {
   statusIndicator: document.getElementById('statusIndicator'),
   statusText: document.getElementById('statusText'),
@@ -134,23 +149,27 @@ function handleStreamControl(message) {
 function handleResponseChunk(message) {
   const { content, done } = message;
 
-  if (done) {
-    // Final render with markdown
-    if (lastAssistantMessage && lastAssistantMessage.dataset.rawContent) {
-      renderMarkdown(lastAssistantMessage);
-    }
-    return;
-  }
+  console.log('[CHUNK]', { done: message.done, contentLength: message.content?.length });
 
+  // Create message container if needed (BEFORE checking done flag)
   if (!lastAssistantMessage || lastAssistantMessage.className !== 'message assistant') {
     lastAssistantMessage = addMessage('assistant', '');
     lastAssistantMessage.dataset.rawContent = '';
   }
 
+  if (done) {
+    // Final render with markdown
+    if (lastAssistantMessage && lastAssistantMessage.dataset.rawContent) {
+      console.log('Rendering markdown for completed response');
+      renderMarkdown(lastAssistantMessage);
+    }
+    return;
+  }
+
   // Accumulate raw content
   lastAssistantMessage.dataset.rawContent += content;
 
-  // For streaming, show plain text first (markdown rendering is expensive)
+  // For streaming, show plain text (will be replaced with markdown when done)
   lastAssistantMessage.textContent = lastAssistantMessage.dataset.rawContent;
 
   elements.messages.scrollTop = elements.messages.scrollHeight;
@@ -160,6 +179,15 @@ function handleResponseChunk(message) {
 function renderMarkdown(messageElement) {
   const rawContent = messageElement.dataset.rawContent;
   if (!rawContent) return;
+
+  console.log('[MARKDOWN] Starting render, content length:', rawContent.length);
+
+  // Check if libraries are loaded
+  if (!librariesLoaded || typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+    console.warn('Markdown libraries not loaded, showing plain text');
+    messageElement.textContent = rawContent;
+    return;
+  }
 
   try {
     // Parse markdown
@@ -172,23 +200,32 @@ function renderMarkdown(messageElement) {
         'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
         'ul', 'ol', 'li', 'blockquote', 'a'
       ],
-      ALLOWED_ATTR: ['href', 'class'],
+      ALLOWED_ATTR: ['href', 'class', 'language-*'],
       ALLOW_DATA_ATTR: false
     });
 
     // Set HTML
     messageElement.innerHTML = sanitized;
 
-    // Apply syntax highlighting to code blocks
-    messageElement.querySelectorAll('pre code').forEach(block => {
-      Prism.highlightElement(block);
-    });
+    // Apply syntax highlighting if Prism is available
+    if (typeof Prism !== 'undefined') {
+      messageElement.querySelectorAll('pre code').forEach(block => {
+        try {
+          Prism.highlightElement(block);
+        } catch (err) {
+          console.warn('Prism highlighting failed:', err);
+        }
+      });
+    }
 
+    console.log('[MARKDOWN] Render complete');
     elements.messages.scrollTop = elements.messages.scrollHeight;
   } catch (err) {
     console.error('Error rendering markdown:', err);
     // Fallback to plain text
     messageElement.textContent = rawContent;
+    // Show user-visible error
+    addMessage('error', 'Failed to render markdown. Showing plain text.');
   }
 }
 
@@ -391,6 +428,14 @@ chrome.runtime.sendMessage({ type: 'get_connection_status' }, (response) => {
   }
   if (response?.connected) {
     updateConnectionStatus(true);
+  }
+});
+
+// Check markdown libraries on load
+window.addEventListener('load', () => {
+  if (!checkLibraries()) {
+    console.error('❌ Markdown libraries failed to load');
+    addMessage('error', 'Markdown rendering unavailable - libraries failed to load');
   }
 });
 
