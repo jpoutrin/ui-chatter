@@ -98,6 +98,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
                 options=ClaudeAgentOptions(
                     allowed_tools=self.allowed_tools,
                     permission_mode=self.permission_mode,
+                    cwd=self.project_path,
                 )
             ):
                 # Check for cancellation
