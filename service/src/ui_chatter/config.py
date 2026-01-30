@@ -26,16 +26,10 @@ class Settings(BaseSettings):
     PORT: int = 3456
     LOG_LEVEL: str = "INFO"
 
-    # Backend strategy selection
-    BACKEND_STRATEGY: Literal["anthropic-sdk", "claude-cli"] = "claude-cli"
-
-    # Claude CLI configuration (for claude-cli backend)
+    # Claude Agent SDK configuration (subscription-based auth from ~/.claude/config)
     PERMISSION_MODE: Literal[
         "acceptEdits", "bypassPermissions", "default", "delegate", "dontAsk", "plan"
     ] = "bypassPermissions"
-
-    # Claude API configuration (for anthropic-sdk backend)
-    ANTHROPIC_API_KEY: Optional[str] = None  # Required for anthropic-sdk backend
 
     # Storage
     MAX_SCREENSHOT_AGE_HOURS: int = 24

@@ -1,7 +1,9 @@
-"""Agent backend strategies for different Claude implementations."""
+"""Agent backend using Claude Agent SDK with subscription authentication."""
 
 from .base import AgentBackend
-from .anthropic_sdk import AnthropicSDKBackend
-from .claude_cli import ClaudeCodeCLIBackend
+from .claude_agent_sdk import ClaudeAgentSDKBackend
 
-__all__ = ["AgentBackend", "AnthropicSDKBackend", "ClaudeCodeCLIBackend"]
+__all__ = [
+    "AgentBackend",
+    "ClaudeAgentSDKBackend",
+]

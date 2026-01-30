@@ -39,6 +39,7 @@ class SessionStore:
                         permission_mode TEXT,
                         status TEXT NOT NULL DEFAULT 'active',
                         first_message_sent INTEGER NOT NULL DEFAULT 0,
+                        title TEXT DEFAULT 'Untitled',
                         created_at TEXT NOT NULL,
                         last_activity TEXT NOT NULL
                     )
@@ -52,6 +53,11 @@ class SessionStore:
                 await db.execute("""
                     CREATE INDEX IF NOT EXISTS idx_sessions_last_activity
                     ON sessions(last_activity)
+                """)
+
+                await db.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_sessions_title
+                    ON sessions(title)
                 """)
 
                 await db.commit()
@@ -175,7 +181,63 @@ class SessionStore:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT * FROM sessions WHERE status = 'active' ORDER BY last_activity DESC"
+                """
+                SELECT
+                    session_id,
+                    title,
+                    project_path,
+                    backend_type,
+                    permission_mode,
+                    status,
+                    created_at,
+                    last_activity,
+                    first_message_sent
+                FROM sessions
+                WHERE status = 'active'
+                ORDER BY last_activity DESC
+                """
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def set_session_title(self, session_id: str, title: str) -> None:
+        """Set or update session title."""
+        await self.initialize()
+
+        # Truncate title to 100 characters max
+        truncated_title = title[:100] if len(title) > 100 else title
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE sessions
+                SET title = ?, last_activity = ?
+                WHERE session_id = ?
+                """,
+                (truncated_title, datetime.now().isoformat(), session_id),
+            )
+            await db.commit()
+            logger.info(f"Updated title for session {session_id}: {truncated_title}")
+
+    async def search_sessions(self, query: str) -> List[Dict[str, Any]]:
+        """Search sessions by title."""
+        await self.initialize()
+
+        # Escape SQL LIKE special characters
+        escaped_query = query.replace("%", "\\%").replace("_", "\\_")
+        search_pattern = f"%{escaped_query}%"
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT * FROM sessions
+                WHERE status = 'active'
+                  AND title LIKE ? ESCAPE '\\'
+                ORDER BY last_activity DESC
+                LIMIT 50
+                """,
+                (search_pattern,),
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]

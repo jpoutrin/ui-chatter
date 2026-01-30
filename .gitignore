@@ -4,6 +4,9 @@
 *.swp
 *.swo
 
+# Log files
+**/*.log
+
 # Claude AI context
 .claude/
 

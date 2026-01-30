@@ -36,16 +36,10 @@ def serve(
     project: str = typer.Option(
         ".", "--project", "-p", help="Project directory"
     ),
-    backend: str = typer.Option(
-        "claude-cli",
-        "--backend",
-        "-b",
-        help="Backend strategy: 'claude-cli' (uses Claude Code auth) or 'anthropic-sdk' (needs API key)",
-    ),
     permission_mode: Optional[str] = typer.Option(
         None,
         "--permission-mode",
-        help="[DEPRECATED] Permission mode for Claude CLI. Use extension UI instead. "
+        help="[DEPRECATED] Permission mode for Claude Agent SDK. Use extension UI instead. "
         "Valid values: acceptEdits, bypassPermissions, default, delegate, dontAsk, plan",
     ),
     port: int = typer.Option(3456, "--port", help="WebSocket port"),
@@ -55,7 +49,7 @@ def serve(
         False, "--reload", help="Enable auto-reload (dev mode)"
     ),
 ):
-    """Start UI Chatter service."""
+    """Start UI Chatter service with Claude Agent SDK backend."""
     project_path = Path(project).resolve()
 
     # Validate project directory
@@ -65,16 +59,8 @@ def serve(
         )
         raise typer.Exit(1)
 
-    # Validate backend strategy
-    if backend not in ("claude-cli", "anthropic-sdk"):
-        console.print(
-            f"[red]Error:[/red] Invalid backend: {backend}. Use 'claude-cli' or 'anthropic-sdk'"
-        )
-        raise typer.Exit(1)
-
     # Set environment variables BEFORE importing settings to ensure they're picked up
     os.environ["UI_CHATTER_PROJECT_PATH"] = str(project_path)
-    os.environ["BACKEND_STRATEGY"] = backend
     os.environ["DEBUG"] = "true" if debug else "false"
 
     # Handle permission mode (deprecated CLI flag)
@@ -124,17 +110,12 @@ def serve(
     signal.signal(signal.SIGTERM, signal_handler)
 
     # Display startup info
-    backend_desc = "Claude Code CLI" if backend == "claude-cli" else "Anthropic SDK"
-    permission_info = (
-        f"\n🔒 Default Permission Mode: {permission_mode} (can be changed via extension)"
-        if backend == "claude-cli"
-        else ""
-    )
     console.print(
         Panel.fit(
             f"[bold]UI Chatter Service[/bold]\n\n"
             f"📁 Project: {project_path}\n"
-            f"🤖 Backend: {backend_desc}{permission_info}\n"
+            f"🤖 Backend: Claude Agent SDK (subscription-based auth)\n"
+            f"🔒 Default Permission Mode: {permission_mode} (can be changed via extension)\n"
             f"📡 WebSocket: ws://{host}:{port}\n"
             f"🔍 Debug: {'enabled' if debug else 'disabled'}",
             border_style="green",
