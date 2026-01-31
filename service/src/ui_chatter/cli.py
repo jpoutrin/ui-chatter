@@ -5,6 +5,7 @@ import os
 import signal
 import sys
 from pathlib import Path
+from types import FrameType
 from typing import Optional
 
 import httpx
@@ -48,7 +49,7 @@ def serve(
     reload: bool = typer.Option(
         False, "--reload", help="Enable auto-reload (dev mode)"
     ),
-):
+) -> None:
     """Start UI Chatter service with Claude Agent SDK backend."""
     project_path = Path(project).resolve()
 
@@ -102,7 +103,7 @@ def serve(
             console.print("[green]✓[/green] Added .ui-chatter/ to .gitignore")
 
     # Setup signal handlers for graceful shutdown
-    def signal_handler(sig, frame):
+    def signal_handler(sig: int, frame: Optional[FrameType]) -> None:
         console.print("\n[yellow]Shutting down gracefully...[/yellow]")
         sys.exit(0)
 

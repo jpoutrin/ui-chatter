@@ -6,7 +6,9 @@ import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Any, AsyncIterator, Dict, Optional
+
+from .types import WebSocketMessage
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 
@@ -15,6 +17,7 @@ from .logging_config import setup_logging
 from .models.messages import (
     ChatRequest,
     HandshakeMessage,
+    PermissionMode,
     UpdatePermissionModeMessage,
     PermissionModeUpdatedMessage,
     PermissionResponse,
@@ -43,7 +46,7 @@ stream_controller: StreamController
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan: startup and shutdown."""
     # Startup
     logger.info(f"Starting {settings.PROJECT_NAME}...")
@@ -55,7 +58,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"Project path: {project_path}")
 
     # Get permission mode from environment or use settings default
-    permission_mode = os.environ.get("PERMISSION_MODE", settings.PERMISSION_MODE)
+    permission_mode_str = os.environ.get("PERMISSION_MODE", settings.PERMISSION_MODE)
+    # Cast to PermissionMode (mypy type narrowing)
+    permission_mode: PermissionMode = permission_mode_str  # type: ignore[assignment]
 
     # Initialize stream controller for cancellation support (BEFORE connection_manager)
     stream_controller = StreamController()
@@ -113,7 +118,7 @@ app = FastAPI(
 
 
 @app.get("/health")
-async def health_check():
+async def health_check() -> Dict[str, Any]:
     """Health check endpoint."""
     return {
         "status": "ok",
@@ -124,7 +129,7 @@ async def health_check():
 
 
 @app.get("/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str):
+async def get_session_messages(session_id: str) -> Dict[str, Any]:
     """
     Get conversation history for a session.
 
@@ -152,7 +157,7 @@ async def get_session_messages(session_id: str):
 
 
 @app.get("/sessions")
-async def list_sessions():
+async def list_sessions() -> Dict[str, Any]:
     """List all sessions tracked by UI Chatter."""
     if not session_manager.session_store:
         return {"sessions": []}
@@ -179,7 +184,7 @@ async def list_sessions():
 
 
 @app.get("/api/v1/agent-sessions")
-async def list_agent_sessions():
+async def list_agent_sessions() -> Dict[str, Any]:
     """List all Agent SDK sessions (Layer 2 sessions)."""
     if not session_manager.session_store:
         return {"agent_sessions": []}
@@ -195,8 +200,8 @@ async def list_agent_sessions():
 @app.post("/api/v1/sessions/{session_id}/switch-sdk-session")
 async def switch_sdk_session(
     session_id: str,
-    request_body: dict
-):
+    request_body: Dict[str, Any]
+) -> Dict[str, Any]:
     """
     Switch the current WebSocket session to use a different Agent SDK session.
 
@@ -239,7 +244,7 @@ async def list_project_files(
     pattern: Optional[str] = None,
     prefix: Optional[str] = None,
     limit: int = 100
-):
+) -> Dict[str, Any]:
     """List files in project directory with optional filtering."""
     # 1. Validate session exists
     session = await session_manager.get_session(session_id)
@@ -268,7 +273,7 @@ async def list_commands(
     prefix: Optional[str] = None,
     limit: int = 50,
     mode: str = "agent"  # "agent", "shell", "all"
-):
+) -> Dict[str, Any]:
     """List available commands (agent slash commands or shell commands)."""
     # 1. Validate session exists
     session = await session_manager.get_session(session_id)
@@ -341,7 +346,7 @@ async def list_commands(
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket) -> None:
     """Main WebSocket endpoint for browser extension."""
     session_id = str(uuid.uuid4())
 
@@ -357,7 +362,7 @@ async def websocket_endpoint(websocket: WebSocket):
             f"[WS IN] {session_id[:8]}... | handshake | {json.dumps(handshake_data)[:200]}"
         )
 
-        permission_mode = "plan"  # Default
+        permission_mode: PermissionMode = "plan"  # Default
         page_url = None
         tab_id = None
 
@@ -375,7 +380,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 logger.warning(f"Invalid handshake, using default mode: {e}")
 
         # Create WebSocket send callback for backend permission requests
-        async def ws_send(message: dict):
+        async def ws_send(message: WebSocketMessage) -> None:
             """Callback for backend to send messages to UI."""
             await connection_manager.send_message(session_id, message)
 
@@ -443,7 +448,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # Keep as defensive fallback
                 stream_id = data.get("stream_id")
-                if stream_id:
+                if stream_id and isinstance(stream_id, str):
                     success = stream_controller.cancel_stream(stream_id)
                     await connection_manager.send_message(
                         session_id,
@@ -487,30 +492,28 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Keep old session in database for history/resumption
                 try:
                     # Get current session info
-                    session = await session_manager.get_session(session_id)
-                    if session:
-                        tab_id = session.tab_id
-                        page_url = session.page_url
-                        old_sdk_session_id = session.sdk_session_id
+                    current_session = await session_manager.get_session(session_id)
+                    if current_session:
+                        old_sdk_session_id = current_session.backend.sdk_session_id
 
                         # Shutdown old backend (keeps session in DB)
-                        await session.backend.shutdown()
+                        await current_session.backend.shutdown()
 
                         # Create new backend with no auto-resume (fresh session)
                         new_backend = session_manager._create_backend(
-                            project_path=session.project_path,
-                            permission_mode=session.permission_mode,
+                            session_id=session_id,
+                            project_path=current_session.project_path,
+                            permission_mode=current_session.permission_mode,
                             resume_session_id=None,  # Don't resume - start fresh
                             ws_send_callback=ws_send
                         )
 
                         # Update session with new backend
-                        session.backend = new_backend
-                        session.sdk_session_id = new_backend.sdk_session_id
+                        current_session.backend = new_backend
 
                         # Update in database (new SDK session ID, keeps old one too)
-                        if session_manager.session_store:
-                            await session_manager.session_store.update_sdk_session(
+                        if session_manager.session_store and new_backend.sdk_session_id:
+                            await session_manager.session_store.set_sdk_session_id(
                                 session_id, new_backend.sdk_session_id
                             )
 
@@ -552,9 +555,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
 
                 # Get session's backend instance and resolve permission
-                session = await session_manager.get_session(session_id)
-                if session and hasattr(session.backend, "resolve_permission"):
-                    session.backend.resolve_permission(request_id, {
+                perm_session = await session_manager.get_session(session_id)
+                if perm_session and hasattr(perm_session.backend, "resolve_permission"):
+                    perm_session.backend.resolve_permission(request_id, {
                         "approved": data.get("approved", False),
                         "modified_input": data.get("modified_input"),
                         "answers": data.get("answers"),
@@ -586,7 +589,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 screenshot_path: Optional[str] = None
                 if chat_request.screenshot:
                     try:
-                        element_id = chat_request.context.element.id or "unknown"
+                        element_id = (
+                            (chat_request.context.element.id or "unknown")
+                            if chat_request.context and chat_request.context.element
+                            else "unknown"
+                        )
                         screenshot_path = await screenshot_store.save(
                             session_id, element_id, chat_request.screenshot
                         )
@@ -626,9 +633,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
                     if chunk_type == "session_established":
                         # Backend established SDK session, persist it
-                        sdk_session_id = response.get("sdk_session_id")
-                        if sdk_session_id:
-                            await session_manager.update_sdk_session_id(session_id, sdk_session_id)
+                        sdk_session_id_value = response.get("sdk_session_id")
+                        if sdk_session_id_value and isinstance(sdk_session_id_value, str):
+                            await session_manager.update_sdk_session_id(session_id, sdk_session_id_value)
 
                             # Generate session title from first message (first 50 chars)
                             title = chat_request.message[:50].strip()
