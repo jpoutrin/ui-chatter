@@ -2,7 +2,12 @@
 
 import asyncio
 from fastapi import WebSocket, status
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
+
+from .types import WebSocketMessage
+
+if TYPE_CHECKING:
+    from .stream_controller import StreamController
 import logging
 import json
 
@@ -36,9 +41,9 @@ class ConnectionManager:
         self.ping_interval = ping_interval  # seconds between pings
         self.ping_timeout = ping_timeout  # seconds to wait for pong
         self.active_connections: Dict[str, WebSocket] = {}
-        self.ping_tasks: Dict[str, asyncio.Task] = {}
-        self.receiver_tasks: Dict[str, asyncio.Task] = {}  # Background receiver tasks
-        self.message_queues: Dict[str, asyncio.Queue] = {}  # Message queues
+        self.ping_tasks: Dict[str, asyncio.Task[None]] = {}
+        self.receiver_tasks: Dict[str, asyncio.Task[None]] = {}  # Background receiver tasks
+        self.message_queues: Dict[str, asyncio.Queue[Optional[WebSocketMessage]]] = {}  # Message queues
         self.last_pong_time: Dict[str, float] = {}  # Track last pong receipt
         self.pong_events: Dict[str, asyncio.Event] = {}  # Signal pong receipt
         self.session_store = session_store
@@ -150,7 +155,7 @@ class ConnectionManager:
 
         logger.info(f"Session migrated: {old_session_id} -> {new_session_id}")
 
-    async def send_message(self, session_id: str, message: dict) -> bool:
+    async def send_message(self, session_id: str, message: WebSocketMessage) -> bool:
         """
         Send JSON message to specific session with debug logging.
 
@@ -347,7 +352,7 @@ class ConnectionManager:
             print(f"✓ Started receiver task for session {session_id}")
             logger.debug(f"Started receiver task for session {session_id}")
 
-    async def receive_message(self, session_id: str, timeout: Optional[float] = None) -> Optional[dict]:
+    async def receive_message(self, session_id: str, timeout: Optional[float] = None) -> Optional[WebSocketMessage]:
         """
         Receive next message from the queue for this session.
 
@@ -370,7 +375,7 @@ class ConnectionManager:
         except asyncio.TimeoutError:
             raise  # Let caller handle timeout
 
-    async def handle_switch_session(self, session_id: str, new_session_id: str) -> dict:
+    async def handle_switch_session(self, session_id: str, new_session_id: str) -> Dict[str, Any]:
         """
         Handle session switching.
 

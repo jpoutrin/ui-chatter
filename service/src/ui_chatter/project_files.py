@@ -3,7 +3,7 @@
 import logging
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pathspec
 
@@ -50,7 +50,7 @@ class ProjectFileLister:
         self.project_path = Path(project_path).resolve()
         self.use_gitignore = use_gitignore
         self.gitignore_spec: Optional[pathspec.PathSpec] = None
-        self._cache: Dict[Tuple[Optional[str], Optional[str]], Tuple[dict, float]] = {}
+        self._cache: Dict[Tuple[Optional[str], Optional[str]], Tuple[Dict[str, Any], float]] = {}
         self._cache_ttl = 30  # seconds
 
         if self.use_gitignore:
@@ -125,7 +125,7 @@ class ProjectFileLister:
 
         return False
 
-    async def _walk_directory(self, max_depth: int = 10) -> List[dict]:
+    async def _walk_directory(self, max_depth: int = 10) -> List[Dict[str, Any]]:
         """
         Recursively walk directory tree.
 
@@ -135,7 +135,7 @@ class ProjectFileLister:
         Returns:
             List of file metadata dictionaries
         """
-        files: List[dict] = []
+        files: List[Dict[str, Any]] = []
 
         def walk_recursive(current_path: Path, depth: int) -> None:
             if depth > max_depth:
@@ -178,7 +178,7 @@ class ProjectFileLister:
 
     async def list_files(
         self, pattern: Optional[str] = None, prefix: Optional[str] = None, limit: int = 100
-    ) -> dict:
+    ) -> Dict[str, Any]:
         """
         List files in project with optional filtering.
 

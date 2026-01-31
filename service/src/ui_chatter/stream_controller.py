@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ class StreamController:
     - Creation timestamp for timeout detection
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._streams: Dict[str, asyncio.Event] = {}
         self._states: Dict[str, str] = {}
         self._timestamps: Dict[str, datetime] = {}
@@ -71,19 +71,23 @@ class StreamController:
             return self._streams[stream_id].is_set()
         return False
 
-    def cleanup_stream(self, stream_id: str):
+    def cleanup_stream(self, stream_id: str) -> None:
         """Remove stream state after completion."""
         self._streams.pop(stream_id, None)
         self._states.pop(stream_id, None)
         self._timestamps.pop(stream_id, None)
         logger.info(f"Cleaned up stream {stream_id}")
 
-    def list_active_streams(self) -> Dict[str, dict]:
+    def list_active_streams(self) -> Dict[str, Dict[str, Any]]:
         """Return all active streams with metadata."""
         return {
             stream_id: {
                 "state": self._states.get(stream_id),
-                "created": self._timestamps.get(stream_id).isoformat() if stream_id in self._timestamps else None,
+                "created": (
+                    self._timestamps[stream_id].isoformat()
+                    if stream_id in self._timestamps
+                    else None
+                ),
                 "cancelled": self._streams[stream_id].is_set()
             }
             for stream_id in self._streams
