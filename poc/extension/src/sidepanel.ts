@@ -73,14 +73,54 @@ const MessageType = {
   STREAM_CONTROL: 'stream_control',
   STATUS: 'status',
   ERROR: 'error'
-};
+} as const;
 
 const ToolActivityStatus = {
   PENDING: 'pending',
   EXECUTING: 'executing',
   COMPLETED: 'completed',
   FAILED: 'failed'
-};
+} as const;
+
+// Chrome runtime message types (for chrome.runtime.sendMessage)
+const RuntimeMessageType = {
+  SEND_CHAT: 'send_chat',
+  SEND_TO_SERVER: 'sendToServer',
+  PERMISSION_MODE_CHANGED: 'permission_mode_changed'
+} as const;
+
+// Extract literal types from constants
+type MessageTypeValue = typeof MessageType[keyof typeof MessageType];
+type ToolActivityStatusValue = typeof ToolActivityStatus[keyof typeof ToolActivityStatus];
+type RuntimeMessageTypeValue = typeof RuntimeMessageType[keyof typeof RuntimeMessageType];
+
+// Runtime message type definitions (chrome.runtime.sendMessage)
+interface SendChatMessage {
+  type: typeof RuntimeMessageType.SEND_CHAT;
+  elementContext: CapturedElement | null;
+  message: string;
+}
+
+interface SendToServerMessage {
+  type: typeof RuntimeMessageType.SEND_TO_SERVER;
+  data: {
+    type: string;
+    [key: string]: any;
+  };
+}
+
+interface PermissionModeChangedMessage {
+  type: typeof RuntimeMessageType.PERMISSION_MODE_CHANGED;
+  mode: string;
+}
+
+// Union type for all runtime messages
+type RuntimeMessage = SendChatMessage | SendToServerMessage | PermissionModeChangedMessage;
+
+// Typed helper for sending runtime messages (provides compile-time type checking)
+function sendRuntimeMessage(message: RuntimeMessage): void {
+  chrome.runtime.sendMessage(message);
+}
 
 // Active tools tracking
 const activeTools: Map<string, ToolActivity> = new Map();
@@ -1373,8 +1413,8 @@ function sendMessage() {
   lastAssistantMessage = null;
 
   // Send to background script (context is optional)
-  chrome.runtime.sendMessage({
-    type: 'send_chat',
+  sendRuntimeMessage({
+    type: RuntimeMessageType.SEND_CHAT,
     elementContext: currentContext || null,
     message
   });
@@ -1550,8 +1590,8 @@ elements.messageInput.addEventListener('keypress', (e) => {
     await chrome.storage.local.set({ permissionMode: newMode });
 
     // Notify background script to update server
-    chrome.runtime.sendMessage({
-      type: 'permission_mode_changed',
+    sendRuntimeMessage({
+      type: RuntimeMessageType.PERMISSION_MODE_CHANGED,
       mode: newMode
     });
 
@@ -1767,8 +1807,8 @@ async function respondToPermission(approved, modifiedInput = null, answers = nul
     }
 
     // Notify background script to update server
-    chrome.runtime.sendMessage({
-      type: 'permission_mode_changed',
+    sendRuntimeMessage({
+      type: RuntimeMessageType.PERMISSION_MODE_CHANGED,
       mode: 'acceptEdits'
     });
 
@@ -1777,8 +1817,8 @@ async function respondToPermission(approved, modifiedInput = null, answers = nul
   }
 
   // Send response via background script
-  chrome.runtime.sendMessage({
-    type: 'sendToServer',
+  sendRuntimeMessage({
+    type: RuntimeMessageType.SEND_TO_SERVER,
     data: {
       type: 'permission_response',
       request_id: currentPermissionRequest.request_id,
@@ -1807,8 +1847,8 @@ async function respondToPermission(approved, modifiedInput = null, answers = nul
 
     // Automatically send a message to continue with implementation
     // Use the same format as normal message sending
-    chrome.runtime.sendMessage({
-      type: 'send_chat',
+    sendRuntimeMessage({
+      type: RuntimeMessageType.SEND_CHAT,
       elementContext: null,
       message: 'Please proceed with implementing the approved plan.'
     });
@@ -1969,11 +2009,6 @@ document.addEventListener('visibilitychange', () => {
 
     // Try multiple times
     focusOnVisible();
-    setTimeout(focusOnVisible, 10);
-    setTimeout(focusOnVisible, 50);
-    setTimeout(focusOnVisible, 100);
-    setTimeout(focusOnVisible, 200);
-    setTimeout(focusOnVisible, 500);
     requestAnimationFrame(focusOnVisible);
   }
 });
