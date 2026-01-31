@@ -24,6 +24,8 @@ from .session_store import SessionStore
 from .session_repository import SessionRepository
 from .websocket import ConnectionManager
 from .stream_controller import StreamController
+from .project_files import ProjectFileLister
+from .commands_discovery import CommandDiscovery, Command
 
 # Setup logging
 setup_logging(level=settings.LOG_LEVEL, debug=settings.DEBUG)
@@ -158,12 +160,13 @@ async def list_sessions():
     # Enrich with message counts from Claude Code storage
     enriched = []
     for session in active_sessions:
-        if session_manager.session_repository:
+        msg_count = 0
+        # Use SDK session ID to read from JSONL files (if available)
+        sdk_session_id = session.get("sdk_session_id")
+        if session_manager.session_repository and sdk_session_id:
             msg_count = session_manager.session_repository.get_message_count(
-                session["session_id"]
+                sdk_session_id
             )
-        else:
-            msg_count = 0
 
         enriched.append({
             **session,
@@ -171,6 +174,141 @@ async def list_sessions():
         })
 
     return {"sessions": enriched}
+
+
+@app.get("/api/v1/agent-sessions")
+async def list_agent_sessions():
+    """List all Agent SDK sessions (Layer 2 sessions)."""
+    if not session_manager.session_store:
+        return {"agent_sessions": []}
+
+    agent_sessions = await session_manager.session_store.get_all_sdk_sessions()
+
+    return {
+        "agent_sessions": agent_sessions,
+        "count": len(agent_sessions)
+    }
+
+
+@app.post("/api/v1/sessions/{session_id}/switch-sdk-session")
+async def switch_sdk_session(
+    session_id: str,
+    request_body: dict
+):
+    """
+    Switch the current WebSocket session to use a different Agent SDK session.
+
+    This allows resuming a previous conversation (Layer 2) in a new WebSocket connection (Layer 1).
+
+    Request body: {"target_sdk_session_id": "sdk-uuid"}
+    """
+    target_sdk_session_id = request_body.get("target_sdk_session_id")
+    if not target_sdk_session_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing required field: target_sdk_session_id"
+        )
+
+    # Validate session exists
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Switch to the target SDK session (recreates backend)
+    try:
+        await session_manager.switch_sdk_session(session_id, target_sdk_session_id)
+
+        return {
+            "session_id": session_id,
+            "sdk_session_id": target_sdk_session_id,
+            "status": "switched",
+            "message": f"Session {session_id} now using Agent SDK session {target_sdk_session_id}"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error switching SDK session: {e}")
+        raise HTTPException(status_code=500, detail="Failed to switch SDK session")
+
+
+@app.get("/api/v1/projects/{session_id}/files")
+async def list_project_files(
+    session_id: str,
+    pattern: Optional[str] = None,
+    prefix: Optional[str] = None,
+    limit: int = 100
+):
+    """List files in project directory with optional filtering."""
+    # 1. Validate session exists
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # 2. Create file lister
+    lister = ProjectFileLister(session.project_path)
+
+    # 3. Get files
+    try:
+        result = await lister.list_files(pattern=pattern, prefix=prefix, limit=limit)
+        return {
+            "session_id": session_id,
+            "project_path": session.project_path,
+            **result
+        }
+    except Exception as e:
+        logger.error(f"Error listing files: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list files")
+
+
+@app.get("/api/v1/projects/{session_id}/commands")
+async def list_commands(
+    session_id: str,
+    prefix: Optional[str] = None,
+    limit: int = 50,
+    mode: str = "agent"  # "agent", "shell", "all"
+):
+    """List available commands (agent slash commands or shell commands)."""
+    # 1. Validate session exists
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # 2. Validate mode parameter
+    if mode not in ["agent", "shell", "all"]:
+        raise HTTPException(status_code=400, detail="Invalid mode. Use 'agent', 'shell', or 'all'")
+
+    # 3. Discover commands
+    discovery = CommandDiscovery(
+        project_path=session.project_path,
+        backend=session.backend
+    )
+
+    # 4. Get commands
+    try:
+        commands = await discovery.discover_commands(mode=mode)
+
+        # Filter by prefix if provided
+        if prefix:
+            # For agent commands, strip leading slash for comparison
+            prefix_normalized = prefix.lstrip('/') if prefix.startswith('/') else prefix
+            commands = [
+                cmd for cmd in commands
+                if cmd.name.startswith(prefix_normalized) or
+                   cmd.command.startswith(prefix)
+            ]
+
+        # Apply limit
+        commands = commands[:limit]
+
+        return {
+            "session_id": session_id,
+            "mode": mode,
+            "command_count": len(commands),
+            "commands": [cmd.model_dump() for cmd in commands]
+        }
+    except Exception as e:
+        logger.error(f"Error discovering commands: {e}")
+        raise HTTPException(status_code=500, detail="Failed to discover commands")
 
 
 @app.websocket("/ws")
@@ -191,21 +329,47 @@ async def websocket_endpoint(websocket: WebSocket):
         )
 
         permission_mode = "plan"  # Default
+        page_url = None
+        tab_id = None
+
         if handshake_data.get("type") == "handshake":
             try:
                 handshake = HandshakeMessage(**handshake_data)
                 permission_mode = handshake.permission_mode
-                logger.info(f"Received handshake with permission mode: {permission_mode}")
+                page_url = handshake.page_url
+                tab_id = handshake.tab_id
+                logger.info(
+                    f"Received handshake with permission mode: {permission_mode}, "
+                    f"page_url: {page_url}, tab_id: {tab_id}"
+                )
             except Exception as e:
                 logger.warning(f"Invalid handshake, using default mode: {e}")
 
-        # Create agent session with specified permission mode
+        # Create agent session with specified permission mode and auto-resume support
         session = await session_manager.create_session(
             session_id,
-            permission_mode=permission_mode
+            permission_mode=permission_mode,
+            page_url=page_url,
+            tab_id=tab_id,
+            auto_resume=True,
         )
 
-        logger.info(f"Session {session_id} ready for messages")
+        # Send handshake acknowledgment with resumed flag and SDK session ID
+        resumed = session.backend.has_established_session
+        sdk_session_id = session.backend.sdk_session_id if resumed else None
+
+        await connection_manager.send_message(
+            session_id,
+            {
+                "type": "handshake_ack",
+                "session_id": session_id,
+                "permission_mode": permission_mode,
+                "resumed": resumed,
+                "sdk_session_id": sdk_session_id,
+            },
+        )
+
+        logger.info(f"Session {session_id} ready for messages (resumed: {resumed})")
 
         # Start background receiver task (processes pongs immediately)
         connection_manager.start_receiver(session_id, websocket, WS_RECEIVE_TIMEOUT)
@@ -318,19 +482,35 @@ async def websocket_endpoint(websocket: WebSocket):
                     {"type": "status", "status": "thinking", "detail": None},
                 )
 
-                # Check if this is the first message for this session
-                is_first = session.is_first_message()
-
-                # Stream response from agent backend with cancellation support
+                # Stream response from agent backend with cancellation support (no is_first_message needed)
                 async for response in session.backend.handle_chat(
-                    chat_request.context,
-                    chat_request.message,
-                    is_first_message=is_first,
+                    context=chat_request.context,
+                    message=chat_request.message,
                     screenshot_path=screenshot_path,
                     cancel_event=cancel_event,
                 ):
+                    chunk_type = response.get("type")
+
+                    if chunk_type == "session_established":
+                        # Backend established SDK session, persist it
+                        sdk_session_id = response.get("sdk_session_id")
+                        if sdk_session_id:
+                            await session_manager.update_sdk_session_id(session_id, sdk_session_id)
+
+                            # Generate session title from first message (first 50 chars)
+                            title = chat_request.message[:50].strip()
+                            if len(chat_request.message) > 50:
+                                title += "..."
+
+                            # Set the session title
+                            if session_manager.session_store:
+                                await session_manager.session_store.set_session_title(session_id, title)
+                                logger.info(f"Set session title: {title}")
+                        # Don't forward to client
+                        continue
+
                     # Capture stream_id from first stream_control message
-                    if response.get("type") == "stream_control" and response.get("action") == "started":
+                    if chunk_type == "stream_control" and response.get("action") == "started":
                         current_stream_id = response.get("stream_id")
                         # Create cancel event for this stream
                         cancel_event = stream_controller.create_stream(current_stream_id)
@@ -339,14 +519,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     await connection_manager.send_message(session_id, response)
 
                     # Cleanup stream after completion or cancellation
-                    if response.get("type") == "stream_control" and response.get("action") in ["completed", "cancelled"]:
+                    if chunk_type == "stream_control" and response.get("action") in ["completed", "cancelled"]:
                         if current_stream_id:
                             stream_controller.cleanup_stream(current_stream_id)
                             logger.info(f"Stream {current_stream_id} cleaned up")
-
-                # Mark first message as sent in both session and store
-                if is_first:
-                    await session_manager.mark_first_message_sent(session_id)
 
                 # Send done status
                 await connection_manager.send_message(
