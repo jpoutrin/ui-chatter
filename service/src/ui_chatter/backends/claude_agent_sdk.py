@@ -18,6 +18,11 @@ from claude_agent_sdk.types import (
     PermissionMode as SDKPermissionMode, ToolPermissionContext,
     PermissionUpdate, PermissionBehavior,
 
+    # Hook types
+    HookMatcher, HookContext, SyncHookJSONOutput, AsyncHookJSONOutput,
+    PreToolUseHookInput, PostToolUseHookInput, UserPromptSubmitHookInput,
+    StopHookInput, SubagentStopHookInput, PreCompactHookInput,
+
     # Message types
     Message, UserMessage, AssistantMessage,
     SystemMessage, ResultMessage, StreamEvent,
@@ -204,11 +209,13 @@ class ClaudeAgentSDKBackend(AgentBackend):
         project_path: str,
         permission_mode: PermissionMode = "bypassPermissions",
         resume_session_id: str | None = None,  # For explicit resume
+        fork_session: bool = False,  # Fork session to preserve context with new settings
         ws_send_callback: Callable[[WebSocketMessage], Awaitable[None]] | None = None,  # NEW: WebSocket send callback
         **kwargs: Any
     ) -> None:
         super().__init__(project_path)
         self.permission_mode: PermissionMode = permission_mode
+        self.fork_session: bool = fork_session
         self.slash_commands: list[str] = []  # Captured from SDK init message
         self.slash_commands_initialized: bool = False  # Track if we've fetched commands
         self.allowed_tools: list[str] = [
@@ -349,25 +356,29 @@ class ClaudeAgentSDKBackend(AgentBackend):
             Configured ClaudeAgentOptions instance
         """
         if self.has_established_session:
-            logger.info(f"[AGENT SDK] Resuming session: {self.sdk_session_id}")
+            logger.info(f"[AGENT SDK] Resuming session: {self.sdk_session_id} (fork={self.fork_session})")
             return ClaudeAgentOptions(
                 resume=self.sdk_session_id,
+                fork_session=self.fork_session,
                 allowed_tools=self.allowed_tools,
                 permission_mode=self.permission_mode,
                 cwd=self.project_path,
                 setting_sources=['user', 'project'],
                 stderr=lambda msg: logger.error(f"[SDK STDERR] {msg}"),
                 can_use_tool=self._can_use_tool_callback,
+                hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[self._keep_stream_open_hook])]},
             )
         else:
             logger.info("[AGENT SDK] Creating new session (no resume)")
             return ClaudeAgentOptions(
                 allowed_tools=self.allowed_tools,
                 permission_mode=self.permission_mode,
+                fork_session=self.fork_session,
                 cwd=self.project_path,
                 setting_sources=['user', 'project'],
                 stderr=lambda msg: logger.error(f"[SDK STDERR] {msg}"),
                 can_use_tool=self._can_use_tool_callback,
+                hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[self._keep_stream_open_hook])]},
             )
 
     async def handle_chat(
@@ -843,6 +854,24 @@ class ClaudeAgentSDKBackend(AgentBackend):
         # Fallback to instance cache
         return self.slash_commands
 
+    async def _keep_stream_open_hook(
+        self,
+        input_data: PreToolUseHookInput | PostToolUseHookInput | UserPromptSubmitHookInput | StopHookInput | SubagentStopHookInput | PreCompactHookInput,
+        tool_use_id: str | None,
+        context: HookContext
+    ) -> AsyncHookJSONOutput | SyncHookJSONOutput:
+        """
+        Required hook to keep stream open for can_use_tool callback.
+
+        Per SDK documentation: "In Python, can_use_tool requires streaming mode
+        and a PreToolUse hook that returns {'continue_': True} to keep the stream
+        open. Without this hook, the stream closes before the permission callback
+        can be invoked."
+
+        This is a workaround for SDK implementation detail.
+        """
+        return {"continue_": True}
+
     async def _can_use_tool_callback(
         self,
         tool_name: str,
@@ -860,11 +889,14 @@ class ClaudeAgentSDKBackend(AgentBackend):
             PermissionResultAllow: If approved (with optional modified input)
             PermissionResultDeny: If denied or timeout (with reason message)
         """
+        logger.info(f"[PERMISSION] _can_use_tool_callback called for tool: {tool_name}")
+        logger.info(f"[PERMISSION] Permission mode: {self.permission_mode}")
+
         # Meta tools that manage workflow (don't require user permission)
         META_TOOLS: set[MetaToolName] = {
             "AskUserQuestion",  # Multi-choice questions (has special handling)
             "EnterPlanMode",    # Start planning mode
-            "ExitPlanMode",     # Exit planning mode
+            # NOTE: ExitPlanMode removed - it MUST request user approval for the plan
             "TaskCreate",       # Create task in task list
             "TaskUpdate",       # Update task status
             "TaskGet",          # Get task details
@@ -872,20 +904,95 @@ class ClaudeAgentSDKBackend(AgentBackend):
             "Skill",            # Invoke skills
         }
 
-        # Auto-approve meta tools
+        # Special handling for tools that need custom UI prompts
+        if tool_name == "AskUserQuestion":
+            logger.info(f"[PERMISSION] Showing AskUserQuestion prompt")
+            return await self._handle_ask_user_question(input_data)
+
+        if tool_name == "ExitPlanMode":
+            logger.info(f"[PERMISSION] Requesting plan approval from user")
+            return await self._request_plan_approval(input_data, context)
+
+        # Auto-approve other meta tools
         if tool_name in META_TOOLS:
-            # Special handling for AskUserQuestion (show UI prompt)
-            if tool_name == "AskUserQuestion":
-                return await self._handle_ask_user_question(input_data)
-            # All other meta tools auto-approve
+            logger.info(f"[PERMISSION] Auto-approving META tool: {tool_name}")
             return PermissionResultAllow(updated_input=input_data)
 
         # Bypass mode: auto-approve everything
         if self.permission_mode == "bypassPermissions":
+            logger.info(f"[PERMISSION] Bypass mode - auto-approving: {tool_name}")
             return PermissionResultAllow(updated_input=input_data)
 
         # For other modes, request user approval
+        logger.info(f"[PERMISSION] Requesting user approval for: {tool_name}")
         return await self._request_permission_from_ui(tool_name, input_data, context)
+
+    async def _request_plan_approval(
+        self,
+        input_data: dict[str, Any],
+        context: ToolPermissionContext
+    ) -> PermissionResult:
+        """Send plan approval request to UI with plan content."""
+        logger.info(f"[PERMISSION] _request_plan_approval called")
+        logger.info(f"[PERMISSION] ws_send_callback exists: {self.ws_send_callback is not None}")
+
+        if not self.ws_send_callback:
+            logger.warning("No WebSocket callback, denying plan")
+            return PermissionResultDeny(message="No UI connection available")
+
+        # Extract plan content from input
+        plan_content = input_data.get("plan", "")
+
+        # Create permission request
+        request_id, event = self.permission_manager.create_request()
+        logger.info(f"[PERMISSION] Created plan approval request_id: {request_id}")
+
+        # Send plan approval request to UI
+        try:
+            permission_msg = {
+                "type": "permission_request",
+                "request_id": request_id,
+                "request_type": "plan_approval",  # Different type for plan approvals
+                "tool_name": "ExitPlanMode",
+                "plan": plan_content,  # Send plan content for prominent display
+                "input_data": input_data,
+                "timeout_seconds": 300,  # 5 minutes for plan review (vs 60s for tool approval)
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            logger.info(f"[PERMISSION] Sending plan approval request to UI (plan length: {len(plan_content)} chars)")
+            await self.ws_send_callback(permission_msg)
+            logger.info(f"[PERMISSION] Plan approval request sent successfully")
+        except Exception as e:
+            self.permission_manager.cleanup_request(request_id)
+            logger.error(f"[PERMISSION] Failed to send plan approval request: {e}", exc_info=True)
+            return PermissionResultDeny(message=f"Connection lost: {e}")
+
+        # Wait for user response with 5 minute timeout (plan review takes longer)
+        try:
+            await asyncio.wait_for(event.wait(), timeout=300.0)
+
+            # Get result
+            result = self.permission_manager._pending_requests[request_id]["result"]
+            self.permission_manager.cleanup_request(request_id)
+
+            if result is None:
+                logger.warning("[PERMISSION] Plan approval returned None")
+                return PermissionResultDeny(message="No response received")
+
+            logger.info(f"[PERMISSION] Plan approval result: approved={result.get('approved')}")
+
+            if result["approved"]:
+                return PermissionResultAllow(updated_input=input_data)
+            else:
+                return PermissionResultDeny(
+                    message=result.get("reason") or "User rejected the plan"
+                )
+
+        except asyncio.TimeoutError:
+            # Timeout - user didn't respond
+            self.permission_manager.cleanup_request(request_id)
+            logger.warning("[PERMISSION] Plan approval request timed out (5 minutes)")
+            return PermissionResultDeny(message="Plan approval request timed out after 5 minutes")
 
     async def _request_permission_from_ui(
         self,

@@ -77,16 +77,18 @@ class SessionManager:
         project_path: str,
         permission_mode: Optional[PermissionMode] = None,
         resume_session_id: Optional[str] = None,
+        fork_session: bool = False,
         ws_send_callback: Optional[WsSendCallback] = None
     ) -> AgentBackend:
         """Create ClaudeAgentSDKBackend (only backend)."""
         mode = permission_mode or self.permission_mode
 
-        logger.info(f"Creating Claude Agent SDK backend with permission mode: {mode}, resume_session_id: {resume_session_id}")
+        logger.info(f"Creating Claude Agent SDK backend with permission mode: {mode}, resume_session_id: {resume_session_id}, fork={fork_session}")
         return ClaudeAgentSDKBackend(
             project_path=project_path,
             permission_mode=mode,
             resume_session_id=resume_session_id,
+            fork_session=fork_session,
             ws_send_callback=ws_send_callback
         )
 
@@ -384,13 +386,15 @@ class SessionManager:
             await session.backend.shutdown()
 
         # Recreate backend with new permission mode
-        # Preserve SDK session if it was established
+        # IMPORTANT: Fork the SDK session when changing permission mode to preserve context
+        # fork_session=True creates a new session with the conversation history but new settings
         resume_session_id = session.backend.sdk_session_id if session.backend.has_established_session else None
         session.backend = self._create_backend(
             session_id,
             self.project_path,
             permission_mode=new_mode,
-            resume_session_id=resume_session_id,
+            resume_session_id=resume_session_id,  # Resume to fork from
+            fork_session=True,  # Fork preserves context with new mode
             ws_send_callback=session.ws_send_callback
         )
 

@@ -93,9 +93,19 @@ let currentPermissionRequest: {
   input_data: unknown;
   request_id?: string;
   request_type?: string;
+  plan?: string | null;
   questions?: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }>;
 } | null = null;
 let permissionTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Extend window interface for markdown library
+declare global {
+  interface Window {
+    marked?: {
+      parse: (markdown: string) => string;
+    };
+  }
+}
 
 // Markdown library load state
 let librariesLoaded: boolean = false;
@@ -1605,6 +1615,7 @@ function handlePermissionRequest(message) {
     request_type,
     tool_name,
     input_data,
+    plan,
     questions,
     timeout_seconds
   } = message;
@@ -1614,14 +1625,50 @@ function handlePermissionRequest(message) {
     request_type,
     tool_name: tool_name || '',
     input_data: input_data || null,
-    questions
+    questions,
+    plan: plan || null
   };
 
   if (request_type === 'ask_user_question') {
     showAskUserQuestion(questions, timeout_seconds || 60);
+  } else if (request_type === 'plan_approval') {
+    showPlanApproval(plan, timeout_seconds || 300);
   } else {
     showToolPermission(tool_name, input_data, timeout_seconds || 60);
   }
+}
+
+function showPlanApproval(planMarkdown, timeoutSeconds) {
+  // Show tool approval UI for plan, hide question UI
+  document.getElementById('toolApprovalContent').style.display = 'block';
+  document.getElementById('questionContainer').style.display = 'none';
+
+  // Populate tool details
+  document.getElementById('permissionToolName').textContent = 'ExitPlanMode';
+
+  // Render plan as markdown instead of raw text
+  const toolInputEl = document.getElementById('permissionToolInput');
+  try {
+    // Use marked to render markdown
+    if (window.marked) {
+      toolInputEl.innerHTML = window.marked.parse(planMarkdown || '');
+      toolInputEl.classList.add('rendered-markdown');
+    } else {
+      toolInputEl.textContent = planMarkdown || '';
+    }
+  } catch (error) {
+    console.error('[PLAN APPROVAL] Markdown rendering failed:', error);
+    toolInputEl.textContent = planMarkdown || '';
+  }
+
+  // Show modal
+  document.getElementById('permissionModal').style.display = 'block';
+
+  // Start countdown timer (298s client-side for 5 minute timeout)
+  startPermissionTimer(Math.max(298, timeoutSeconds - 2));
+
+  // Focus allow button for keyboard accessibility
+  document.getElementById('allowBtn').focus();
 }
 
 function showToolPermission(toolName, inputData, timeoutSeconds) {
@@ -1700,8 +1747,34 @@ function startPermissionTimer(seconds) {
   }, 1000);
 }
 
-function respondToPermission(approved, modifiedInput = null, answers = null) {
+async function respondToPermission(approved, modifiedInput = null, answers = null) {
   clearInterval(permissionTimer);
+
+  // Track if this is a plan approval for auto-continue
+  const isPlanApproval = currentPermissionRequest?.request_type === 'plan_approval';
+
+  // If approving a plan, automatically switch to acceptEdits mode
+  if (approved && isPlanApproval) {
+    console.log('[PLAN APPROVAL] Switching to acceptEdits mode after plan approval');
+
+    // Save to storage
+    await chrome.storage.local.set({ permissionMode: 'acceptEdits' });
+
+    // Update UI select
+    const modeSelect = document.getElementById('permissionModeSelect') as HTMLSelectElement;
+    if (modeSelect) {
+      modeSelect.value = 'acceptEdits';
+    }
+
+    // Notify background script to update server
+    chrome.runtime.sendMessage({
+      type: 'permission_mode_changed',
+      mode: 'acceptEdits'
+    });
+
+    // Show confirmation
+    addMessage('status', '✅ Plan approved! Switched to Balanced mode for implementation.');
+  }
 
   // Send response via background script
   chrome.runtime.sendMessage({
@@ -1720,6 +1793,26 @@ function respondToPermission(approved, modifiedInput = null, answers = null) {
   document.getElementById('permissionModal').style.display = 'none';
   document.getElementById('permissionTimer').classList.remove('warning');
   currentPermissionRequest = null;
+
+  // Auto-continue after plan approval
+  // Wait for permission mode update to complete, then send continuation message
+  if (approved && isPlanApproval) {
+    console.log('[PLAN APPROVAL] Auto-continuing implementation...');
+
+    // Add visual feedback
+    addMessage('user', 'Please proceed with implementing the approved plan.');
+
+    // Wait a bit for mode switch to complete
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Automatically send a message to continue with implementation
+    // Use the same format as normal message sending
+    chrome.runtime.sendMessage({
+      type: 'send_chat',
+      elementContext: null,
+      message: 'Please proceed with implementing the approved plan.'
+    });
+  }
 }
 
 function showAskUserQuestion(questions, timeoutSeconds) {
