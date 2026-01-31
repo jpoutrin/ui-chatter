@@ -1,13 +1,63 @@
-// @ts-nocheck
 // Side panel script
-let currentContext = null;
-let isConnected = false;
-let currentSessionId = null;  // WebSocket session ID
-let currentSdkSessionId = null;  // Agent SDK session ID
-let selectedSdkSessionId = null;  // User's selected SDK session (before connection)
+import type {
+  ServerMessage,
+  PermissionMode,
+  HandshakeAckMessage
+} from './types';
+
+// Type definitions
+interface SdkSession {
+  sdk_session_id: string;
+  title: string;
+  status: string;
+  created_at: string;
+  last_activity: string;
+}
+
+interface ToolActivity {
+  name: string;
+  status: string;
+  input_summary: string;
+  input?: unknown;
+  duration_ms?: number;
+  duration?: number;
+  timestamp?: number;
+}
+
+interface ChatMessage {
+  role: string;
+  content: string | Array<{ type: string; text: string }>;
+  timestamp: string;
+}
+
+interface Elements {
+  statusIndicator: HTMLElement | null;
+  statusText: HTMLElement | null;
+  selectedElement: HTMLElement | null;
+  permissionModeSelect: HTMLSelectElement | null;
+  elementTag: HTMLElement | null;
+  messages: HTMLElement | null;
+  messageInput: HTMLTextAreaElement | null;
+  sendBtn: HTMLButtonElement | null;
+  selectBtn: HTMLButtonElement | null;
+  stopBtn: HTMLButtonElement | null;
+  thinkingIndicator: HTMLElement | null;
+  sessionSelector: HTMLElement | null;
+  sdkSessionSelect: HTMLSelectElement | null;
+  sessionBadge: HTMLElement | null;
+  tabIndicator: HTMLElement | null;
+  tabIndicatorText: HTMLElement | null;
+}
+
+// State variables
+let currentContext: unknown = null;
+let isConnected: boolean = false;
+let currentSessionId: string | null = null;  // WebSocket session ID
+let currentSdkSessionId: string | null = null;  // Agent SDK session ID
+let selectedSdkSessionId: string | null = null;  // User's selected SDK session (before connection)
 
 // Tab tracking for per-tab connections
-let currentTabId = null;  // Browser tab ID currently being displayed
+let currentTabId: number | null = null;  // Browser tab ID currently being displayed
 
 // Multi-channel streaming state
 const MessageType = {
@@ -26,19 +76,25 @@ const ToolActivityStatus = {
 };
 
 // Active tools tracking
-const activeTools = new Map();
-let activeToolPanel = null;
-let currentStreamId = null;
+const activeTools: Map<string, ToolActivity> = new Map();
+let activeToolPanel: HTMLElement | null = null;
+let currentStreamId: string | null = null;
 
 // Permission modal state
-let currentPermissionRequest = null;
-let permissionTimer = null;
+let currentPermissionRequest: {
+  tool_name: string;
+  input_data: unknown;
+  request_id?: string;
+  request_type?: string;
+  questions?: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }>;
+} | null = null;
+let permissionTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Markdown library load state
-let librariesLoaded = false;
+let librariesLoaded: boolean = false;
 
 // Check if markdown libraries are available
-function checkLibraries() {
+function checkLibraries(): boolean {
   if (typeof marked !== 'undefined' &&
       typeof DOMPurify !== 'undefined' &&
       typeof Prism !== 'undefined') {
@@ -49,33 +105,33 @@ function checkLibraries() {
   return false;
 }
 
-const elements = {
+const elements: Elements = {
   statusIndicator: document.getElementById('statusIndicator'),
   statusText: document.getElementById('statusText'),
   selectedElement: document.getElementById('selectedElement'),
-  permissionModeSelect: document.getElementById('permissionModeSelect'),
+  permissionModeSelect: document.getElementById('permissionModeSelect') as HTMLSelectElement | null,
   elementTag: document.getElementById('elementTag'),
   messages: document.getElementById('messages'),
-  messageInput: document.getElementById('messageInput'),
-  sendBtn: document.getElementById('sendBtn'),
-  selectBtn: document.getElementById('selectBtn'),
-  stopBtn: document.getElementById('stopBtn'),
+  messageInput: document.getElementById('messageInput') as HTMLTextAreaElement | null,
+  sendBtn: document.getElementById('sendBtn') as HTMLButtonElement | null,
+  selectBtn: document.getElementById('selectBtn') as HTMLButtonElement | null,
+  stopBtn: document.getElementById('stopBtn') as HTMLButtonElement | null,
   thinkingIndicator: document.getElementById('thinkingIndicator'),
   sessionSelector: document.getElementById('sessionSelector'),
-  sdkSessionSelect: document.getElementById('sdkSessionSelect'),
+  sdkSessionSelect: document.getElementById('sdkSessionSelect') as HTMLSelectElement | null,
   sessionBadge: document.getElementById('sessionBadge'),
   tabIndicator: document.getElementById('tabIndicator'),
   tabIndicatorText: document.getElementById('tabIndicatorText')
 };
 
 // Listen for messages from background script
-chrome.runtime.onMessage.addListener((message) => {
+chrome.runtime.onMessage.addListener((message: { type: string; [key: string]: unknown }) => {
   if (message.type === 'connection_status') {
     updateConnectionStatus(message.status === 'connected');
   } else if (message.type === 'element_captured') {
     handleElementCaptured(message.context);
   } else if (message.type === 'server_message') {
-    handleServerMessage(message.message);
+    handleServerMessage(message.message as ServerMessage);
   } else if (message.type === 'tab_switched') {
     // NEW: Handle tab switch
     handleTabSwitch(message);
@@ -86,7 +142,7 @@ chrome.runtime.onMessage.addListener((message) => {
 });
 
 // Update connection status UI
-function updateConnectionStatus(connected) {
+function updateConnectionStatus(connected: boolean): void {
   isConnected = connected;
   if (connected) {
     elements.statusIndicator.classList.add('connected');
@@ -597,7 +653,7 @@ function handleServerMessage(message) {
 
       // Refresh available sessions list
       if (currentSessionId) {
-        fetchAvailableSessions(currentSessionId);
+        fetchSdkSessions();
       }
 
       // Update SDK session ID in background
@@ -779,6 +835,7 @@ function handleToolActivity(message) {
   activeTools.set(tool_id, {
     name: tool_name,
     status,
+    input_summary,
     input: input_summary,
     duration: duration_ms,
     timestamp: Date.now()
@@ -1297,7 +1354,7 @@ elements.messageInput.addEventListener('keypress', (e) => {
       hasActivated = true;
       focusInput();
       // Remove visual hint and update placeholder
-      const input = document.getElementById('messageInput');
+      const input = document.getElementById('messageInput') as HTMLTextAreaElement | null;
       if (input) {
         input.classList.remove('needs-activation');
         if (input.placeholder === 'Click here to start typing...') {
@@ -1307,7 +1364,7 @@ elements.messageInput.addEventListener('keypress', (e) => {
       console.log('[FOCUS] Panel activated on first click');
     }
     // Don't steal focus if user clicked a button or input
-    if (!e.target.matches('button, input, select, textarea, a')) {
+    if (e.target && e.target instanceof Element && !e.target.matches('button, input, select, textarea, a')) {
       focusInput();
     }
   }, { capture: true }); // Use capture to catch clicks early
@@ -1389,7 +1446,7 @@ elements.messageInput.addEventListener('keypress', (e) => {
 
   // Listen for mode changes
   elements.permissionModeSelect.addEventListener('change', async (e) => {
-    const newMode = e.target.value;
+    const newMode = (e.target as HTMLSelectElement).value;
     console.log('[PERMISSION MODE] Changed to:', newMode);
 
     // Save to storage
@@ -1426,7 +1483,7 @@ document.addEventListener('keydown', (e) => {
     }
 
     // Make sure element exists
-    const modeSelect = document.getElementById('permissionModeSelect');
+    const modeSelect = document.getElementById('permissionModeSelect') as HTMLSelectElement | null;
     if (!modeSelect) {
       console.warn('[PERMISSION MODE] Select element not found');
       return;
@@ -1465,7 +1522,13 @@ function handlePermissionRequest(message) {
     timeout_seconds
   } = message;
 
-  currentPermissionRequest = { request_id, request_type };
+  currentPermissionRequest = {
+    request_id,
+    request_type,
+    tool_name: tool_name || '',
+    input_data: input_data || null,
+    questions
+  };
 
   if (request_type === 'ask_user_question') {
     showAskUserQuestion(questions, timeout_seconds || 60);
@@ -1646,11 +1709,11 @@ function collectQuestionAnswers() {
     if (q.multiSelect) {
       // Multi-select: join labels with ", "
       answers[q.question] = Array.from(inputs)
-        .map(i => i.value)
+        .map(i => (i as HTMLInputElement).value)
         .join(', ');
     } else {
       // Single select: just the label
-      answers[q.question] = inputs[0]?.value || '';
+      answers[q.question] = (inputs[0] as HTMLInputElement | undefined)?.value || '';
     }
   });
 

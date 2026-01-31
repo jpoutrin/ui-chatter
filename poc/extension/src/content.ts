@@ -1,10 +1,52 @@
-// @ts-nocheck
 // Content script for UI element capture
+
+// Type definitions
+interface AncestorInfo {
+  tagName: string;
+  id: string | undefined;
+  classList: string[];
+}
+
+interface BoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface ElementInfo {
+  tagName: string;
+  id: string | undefined;
+  classList: string[];
+  textContent: string;
+  attributes: Record<string, string>;
+  boundingBox: BoundingBox;
+  xpath: string;
+  cssSelector: string;
+}
+
+interface PageInfo {
+  url: string;
+  title: string;
+}
+
+interface CapturedElement {
+  element: ElementInfo;
+  ancestors: AncestorInfo[];
+  page: PageInfo;
+}
+
+interface ChromeMessage {
+  type: string;
+  context?: CapturedElement;
+}
+
+// State
 let clickModeActive = false;
-let currentHighlight = null;
+let currentHighlight: HTMLElement | null = null;
 
 // Listen for messages from side panel
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: ChromeMessage, _sender, sendResponse) => {
   if (message.type === 'toggle_click_mode') {
     clickModeActive = !clickModeActive;
     sendResponse({ active: clickModeActive });
@@ -13,7 +55,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // Generate XPath for an element
-function getXPath(element) {
+function getXPath(element: Element): string {
   if (element.id !== '') {
     return `//*[@id="${element.id}"]`;
   }
@@ -22,67 +64,72 @@ function getXPath(element) {
     return '/html/body';
   }
 
-  let path = [];
-  while (element && element.nodeType === Node.ELEMENT_NODE) {
+  const path: string[] = [];
+  let currentElement: Element | null = element;
+
+  while (currentElement && currentElement.nodeType === Node.ELEMENT_NODE) {
     let index = 0;
-    let sibling = element.previousSibling;
+    let sibling = currentElement.previousSibling;
 
     while (sibling) {
-      if (sibling.nodeType === Node.ELEMENT_NODE && sibling.tagName === element.tagName) {
+      if (sibling.nodeType === Node.ELEMENT_NODE && (sibling as Element).tagName === currentElement.tagName) {
         index++;
       }
       sibling = sibling.previousSibling;
     }
 
-    const tagName = element.tagName.toLowerCase();
+    const tagName = currentElement.tagName.toLowerCase();
     const pathIndex = index > 0 ? `[${index + 1}]` : '';
     path.unshift(`${tagName}${pathIndex}`);
 
-    element = element.parentElement;
+    currentElement = currentElement.parentElement;
   }
 
   return path.length ? `/${path.join('/')}` : '';
 }
 
 // Generate CSS selector for an element
-function getCSSSelector(element) {
+function getCSSSelector(element: HTMLElement): string {
   if (element.id) {
     return `#${element.id}`;
   }
 
-  let path = [];
-  while (element && element !== document.body) {
-    let selector = element.tagName.toLowerCase();
+  const path: string[] = [];
+  let currentElement: HTMLElement | null = element;
 
-    if (element.classList.length > 0) {
-      selector += '.' + Array.from(element.classList).join('.');
+  while (currentElement && currentElement !== document.body) {
+    let selector = currentElement.tagName.toLowerCase();
+
+    if (currentElement.classList.length > 0) {
+      selector += '.' + Array.from(currentElement.classList).join('.');
     }
 
     // Add nth-child if needed for uniqueness
-    if (element.parentElement) {
-      const siblings = Array.from(element.parentElement.children);
-      const sameTagSiblings = siblings.filter(s => s.tagName === element.tagName);
+    if (currentElement.parentElement) {
+      const siblings = Array.from(currentElement.parentElement.children);
+      const sameTagSiblings = siblings.filter(s => s.tagName === currentElement!.tagName);
       if (sameTagSiblings.length > 1) {
-        const index = siblings.indexOf(element) + 1;
+        const index = siblings.indexOf(currentElement) + 1;
         selector += `:nth-child(${index})`;
       }
     }
 
     path.unshift(selector);
-    element = element.parentElement;
+    currentElement = currentElement.parentElement;
   }
 
   return path.join(' > ');
 }
 
 // Capture element data
-function captureElement(element) {
+function captureElement(element: HTMLElement): CapturedElement {
   const rect = element.getBoundingClientRect();
 
   // Get ancestors (up to 3 levels)
-  const ancestors = [];
+  const ancestors: AncestorInfo[] = [];
   let parent = element.parentElement;
   let level = 0;
+
   while (parent && level < 3) {
     ancestors.push({
       tagName: parent.tagName.toLowerCase(),
@@ -120,7 +167,7 @@ function captureElement(element) {
 }
 
 // Mouse move handler for hover highlight
-document.addEventListener('mousemove', (e) => {
+document.addEventListener('mousemove', (e: MouseEvent) => {
   if (!clickModeActive) return;
 
   // Remove previous highlight
@@ -129,7 +176,7 @@ document.addEventListener('mousemove', (e) => {
   }
 
   // Add highlight to hovered element
-  const element = e.target;
+  const element = e.target as HTMLElement;
   if (element && element !== document.body && element !== document.documentElement) {
     element.classList.add('ui-chatter-highlight');
     currentHighlight = element;
@@ -137,13 +184,13 @@ document.addEventListener('mousemove', (e) => {
 });
 
 // Click handler for element selection
-document.addEventListener('click', (e) => {
+document.addEventListener('click', (e: MouseEvent) => {
   if (!clickModeActive) return;
 
   e.preventDefault();
   e.stopPropagation();
 
-  const element = e.target;
+  const element = e.target as HTMLElement;
 
   // Visual feedback
   element.classList.remove('ui-chatter-highlight');
@@ -168,3 +215,5 @@ document.addEventListener('click', (e) => {
 }, true);
 
 console.log('UI Chatter content script loaded');
+
+export {};

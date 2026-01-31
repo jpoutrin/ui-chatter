@@ -1,42 +1,51 @@
-// @ts-nocheck
 // Background service worker - manages per-tab WebSocket connections
+import type {
+  TabConnection,
+  ConnectionStatus,
+  PermissionMode,
+  EditorType,
+  EditorProtocolBuilder,
+  ServerMessage,
+  RuntimeMessage,
+  Settings
+} from './types';
+
 const WS_URL = 'ws://localhost:3456/ws';
-let currentPermissionMode = 'plan';
+let currentPermissionMode: PermissionMode = 'plan';
 
 // Per-tab WebSocket connections
-// tabId -> {ws, sessionId, sdkSessionId, reconnectTimer, pageUrl, status}
-let tabConnections = {};
-let currentActiveTab = null;
+const tabConnections: Record<number, TabConnection> = {};
+let currentActiveTab: number | null = null;
 
 // Editor protocol builders
-const EDITOR_PROTOCOLS = {
-  vscode: (filePath, lineStart) => {
+const EDITOR_PROTOCOLS: Record<EditorType, EditorProtocolBuilder> = {
+  vscode: (filePath: string, lineStart?: number): string => {
     const lineNum = lineStart || 1;
     return `vscode://file${filePath}:${lineNum}:1`;
   },
 
-  cursor: (filePath, lineStart) => {
+  cursor: (filePath: string, lineStart?: number): string => {
     const lineNum = lineStart || 1;
     return `cursor://file${filePath}:${lineNum}:1`;
   },
 
-  webstorm: (filePath, lineStart) => {
+  webstorm: (filePath: string, lineStart?: number): string => {
     const lineParam = lineStart ? `&line=${lineStart}` : '';
     return `webstorm://open?file=${filePath}${lineParam}`;
   },
 
-  sublime: (filePath, lineStart) => {
+  sublime: (filePath: string, lineStart?: number): string => {
     const lineNum = lineStart ? `:${lineStart}` : '';
     return `subl://open?url=file://${filePath}${lineNum}`;
   },
 
-  vim: (filePath, lineStart) => {
+  vim: (filePath: string, lineStart?: number): string => {
     // Fallback to VS Code for MVP
     return EDITOR_PROTOCOLS.vscode(filePath, lineStart);
   }
 };
 
-function normalizePathForUrl(filePath) {
+function normalizePathForUrl(filePath: string): string {
   // Windows: Convert C:\path to /C:/path
   if (/^[A-Z]:/.test(filePath)) {
     return '/' + filePath.replace(/\\/g, '/');
@@ -45,7 +54,7 @@ function normalizePathForUrl(filePath) {
 }
 
 // Connect to WebSocket server for a specific tab
-async function connectTab(tabId, pageUrl) {
+async function connectTab(tabId: number, pageUrl: string): Promise<TabConnection> {
   // Check if already connected
   if (tabConnections[tabId]?.ws?.readyState === WebSocket.OPEN) {
     console.log(`[TAB ${tabId}] Already connected`);
@@ -55,7 +64,7 @@ async function connectTab(tabId, pageUrl) {
   console.log(`[TAB ${tabId}] Connecting to server...`);
 
   const ws = new WebSocket(WS_URL);
-  const connection = {
+  const connection: TabConnection = {
     ws,
     sessionId: null,
     sdkSessionId: null,
@@ -71,8 +80,8 @@ async function connectTab(tabId, pageUrl) {
     connection.status = 'connected';
 
     // Retrieve current permission mode from storage
-    const result = await chrome.storage.local.get(['permissionMode']);
-    currentPermissionMode = result.permissionMode || 'plan';
+    const result = await chrome.storage.local.get(['permissionMode']) as Settings;
+    currentPermissionMode = (result.permissionMode || 'plan') as PermissionMode;
 
     // Send handshake with tab context
     const handshakeMsg = {
@@ -115,7 +124,7 @@ async function connectTab(tabId, pageUrl) {
     }, 3000);
   };
 
-  ws.onerror = (error) => {
+  ws.onerror = (error: Event) => {
     console.error(`[TAB ${tabId}] WebSocket error:`, error);
     connection.status = 'error';
 
@@ -124,8 +133,8 @@ async function connectTab(tabId, pageUrl) {
     }
   };
 
-  ws.onmessage = (event) => {
-    const message = JSON.parse(event.data);
+  ws.onmessage = (event: MessageEvent) => {
+    const message = JSON.parse(event.data) as ServerMessage;
 
     // Handle ping/pong keepalive
     if (message.type === 'ping') {
@@ -136,8 +145,9 @@ async function connectTab(tabId, pageUrl) {
 
     // Store session IDs
     if (message.type === 'handshake_ack') {
-      connection.sessionId = message.session_id;
-      connection.sdkSessionId = message.sdk_session_id || null;
+      const handshake = message as { type: 'handshake_ack'; session_id: string | null; sdk_session_id?: string | null };
+      connection.sessionId = handshake.session_id;
+      connection.sdkSessionId = handshake.sdk_session_id || null;
       console.log(`[TAB ${tabId}] Session established: ${connection.sessionId}`);
     }
 
@@ -166,7 +176,7 @@ async function connectTab(tabId, pageUrl) {
 }
 
 // Disconnect and cleanup a tab's connection
-function disconnectTab(tabId) {
+function disconnectTab(tabId: number): void {
   const connection = tabConnections[tabId];
   if (!connection) return;
 
@@ -187,7 +197,7 @@ function disconnectTab(tabId) {
 }
 
 // Broadcast connection status to side panel
-function broadcastStatus(status, tabId) {
+function broadcastStatus(status: ConnectionStatus, tabId: number): void {
   try {
     chrome.runtime.sendMessage({
       type: 'connection_status',
@@ -204,14 +214,14 @@ function broadcastStatus(status, tabId) {
 }
 
 // Initialize: load permission mode and set up tab tracking
-chrome.storage.local.get(['permissionMode', 'currentActiveTab'], (result) => {
-  currentPermissionMode = result.permissionMode || 'plan';
+chrome.storage.local.get(['permissionMode', 'currentActiveTab'], (result: Settings & { currentActiveTab?: number }) => {
+  currentPermissionMode = (result.permissionMode || 'plan') as PermissionMode;
   currentActiveTab = result.currentActiveTab || null;
   console.log('[TAB MGMT] Initialized, active tab:', currentActiveTab);
 });
 
 // Listen for tab activation (user switches tabs)
-chrome.tabs.onActivated.addListener(async (activeInfo) => {
+chrome.tabs.onActivated.addListener(async (activeInfo: chrome.tabs.TabActiveInfo) => {
   const { tabId } = activeInfo;
 
   console.log('[TAB MGMT] Tab activated:', tabId);
@@ -239,7 +249,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 });
 
 // Listen for tab URL changes
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener((tabId: number, changeInfo: chrome.tabs.TabChangeInfo, _tab: chrome.tabs.Tab) => {
   if (changeInfo.url) {
     console.log(`[TAB ${tabId}] URL changed to:`, changeInfo.url);
 
@@ -264,7 +274,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 // Listen for tab closure
-chrome.tabs.onRemoved.addListener((tabId) => {
+chrome.tabs.onRemoved.addListener((tabId: number) => {
   console.log(`[TAB ${tabId}] Tab closed, cleaning up connection`);
   disconnectTab(tabId);
 
@@ -275,10 +285,12 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 // Handle messages from content script and side panel
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'connect_tab') {
+chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => {
+  const msg = message as { type?: string; action?: string; [key: string]: unknown };
+
+  if (msg.type === 'connect_tab') {
     // Side panel requesting connection for a specific tab
-    const { tabId, pageUrl } = message;
+    const { tabId, pageUrl } = message as { type: string; tabId: number; pageUrl: string };
 
     connectTab(tabId, pageUrl).then(connection => {
       sendResponse({
@@ -286,7 +298,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sessionId: connection.sessionId,
         status: connection.status
       });
-    }).catch(err => {
+    }).catch((err: Error) => {
       console.error(`[TAB ${tabId}] Connection error:`, err);
       sendResponse({ success: false, error: err.message });
     });
@@ -294,17 +306,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Keep channel open for async response
   }
 
-  else if (message.type === 'disconnect_tab') {
+  else if (msg.type === 'disconnect_tab') {
     // Side panel disconnecting from a tab
-    const { tabId } = message;
+    const { tabId } = message as { type: string; tabId: number };
     disconnectTab(tabId);
     sendResponse({ success: true });
     return true;
   }
 
-  else if (message.type === 'update_sdk_session_id') {
+  else if (msg.type === 'update_sdk_session_id') {
     // Update SDK session ID for a tab
-    const { tabId, sdkSessionId } = message;
+    const { tabId, sdkSessionId } = msg as { type: string; tabId: number; sdkSessionId: string };
     const connection = tabConnections[tabId];
 
     if (connection) {
@@ -318,9 +330,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  else if (message.type === 'register_tab_session') {
+  else if (msg.type === 'register_tab_session') {
     // Register or update tab session info after handshake
-    const { tabId, sessionId, sdkSessionId, pageUrl } = message;
+    const { tabId, sessionId, sdkSessionId, pageUrl } = msg as { type: string; tabId: number; sessionId: string; sdkSessionId: string | null; pageUrl: string };
     const connection = tabConnections[tabId];
 
     if (connection) {
@@ -336,12 +348,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  else if (message.type === 'element_selected') {
+  else if (msg.type === 'element_selected') {
     // Forward to side panel (ignore if not open)
+    const { context } = message as { type: string; context: unknown };
     try {
       chrome.runtime.sendMessage({
         type: 'element_captured',
-        context: message.context
+        context: context
       }, () => {
         if (chrome.runtime.lastError) {
           // Side panel not open, that's ok
@@ -352,16 +365,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
   }
 
-  else if (message.type === 'send_chat') {
+  else if (msg.type === 'send_chat') {
     // Send chat message to server for the active tab
     const tabId = currentActiveTab;
-    const connection = tabConnections[tabId];
+    const connection = tabId !== null ? tabConnections[tabId] : null;
 
     if (connection?.ws?.readyState === WebSocket.OPEN) {
       const chatMsg = {
         type: 'chat',
-        context: message.context,
-        message: message.message
+        context: (message as { context?: unknown }).context,
+        message: (message as { message: string }).message
       };
       console.log(`[TAB ${tabId}] [WS OUT] chat`, chatMsg);
       connection.ws.send(JSON.stringify(chatMsg));
@@ -370,10 +383,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
   }
 
-  else if (message.type === 'clear_session') {
+  else if (msg.type === 'clear_session') {
     // Clear session and start new conversation
     const tabId = currentActiveTab;
-    const connection = tabConnections[tabId];
+    const connection = tabId !== null ? tabConnections[tabId] : null;
 
     if (connection?.ws?.readyState === WebSocket.OPEN) {
       const clearMsg = {
@@ -386,15 +399,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
   }
 
-  else if (message.type === 'cancel_request') {
+  else if (msg.type === 'cancel_request') {
     // Cancel current stream for the active tab
     const tabId = currentActiveTab;
-    const connection = tabConnections[tabId];
+    const connection = tabId !== null ? tabConnections[tabId] : null;
 
     if (connection?.ws?.readyState === WebSocket.OPEN) {
       const cancelMsg = {
         type: 'cancel_request',
-        stream_id: message.stream_id
+        stream_id: (message as { stream_id?: string }).stream_id
       };
       console.log(`[TAB ${tabId}] [WS OUT] cancel_request`, cancelMsg);
       connection.ws.send(JSON.stringify(cancelMsg));
@@ -403,17 +416,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
   }
 
-  else if (message.type === 'permission_mode_changed') {
+  else if (msg.type === 'permission_mode_changed') {
     // Update current mode and notify all active connections
-    currentPermissionMode = message.mode;
+    const { mode } = message as { type: string; mode: PermissionMode };
+    currentPermissionMode = mode;
 
-    Object.entries(tabConnections).forEach(([tabId, connection]) => {
+    Object.entries(tabConnections).forEach(([tabIdStr, connection]) => {
       if (connection.ws?.readyState === WebSocket.OPEN) {
         const modeMsg = {
           type: 'update_permission_mode',
-          mode: message.mode
+          mode: mode
         };
-        console.log(`[TAB ${tabId}] [WS OUT] update_permission_mode`, modeMsg);
+        console.log(`[TAB ${tabIdStr}] [WS OUT] update_permission_mode`, modeMsg);
         connection.ws.send(JSON.stringify(modeMsg));
       }
     });
@@ -422,10 +436,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  else if (message.type === 'retry_with_permission') {
+  else if (msg.type === 'retry_with_permission') {
     // User clicked "Allow and Retry" button
     const tabId = currentActiveTab;
-    const connection = tabConnections[tabId];
+    const connection = tabId !== null ? tabConnections[tabId] : null;
 
     if (connection?.ws?.readyState === WebSocket.OPEN) {
       const retryMsg = {
@@ -440,10 +454,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  else if (message.type === 'cancel_permission_request') {
+  else if (msg.type === 'cancel_permission_request') {
     // User clicked "Cancel" button
     const tabId = currentActiveTab;
-    const connection = tabConnections[tabId];
+    const connection = tabId !== null ? tabConnections[tabId] : null;
 
     if (connection?.ws?.readyState === WebSocket.OPEN) {
       const cancelMsg = {
@@ -456,9 +470,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  else if (message.type === 'get_connection_status') {
+  else if (msg.type === 'get_connection_status') {
     const tabId = currentActiveTab;
-    const connection = tabConnections[tabId];
+    const connection = tabId !== null ? tabConnections[tabId] : null;
 
     sendResponse({
       connected: connection?.ws?.readyState === WebSocket.OPEN,
@@ -468,10 +482,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  else if (message.type === 'get_tab_connection') {
+  else if (msg.type === 'get_tab_connection') {
     // Get full connection info for a specific tab (or current tab if not specified)
-    const tabId = message.tabId || currentActiveTab;
-    const connection = tabConnections[tabId];
+    const requestedTabId = (message as { tabId?: number }).tabId;
+    const tabId = requestedTabId || currentActiveTab;
+    const connection = tabId !== null ? tabConnections[tabId] : null;
 
     sendResponse({
       tabId: tabId,
@@ -480,13 +495,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  else if (message.action === 'openFile') {
+  else if ((msg as { action?: string }).action === 'openFile') {
     // Open file in editor with dynamic protocol support
-    chrome.storage.local.get(['preferredEditor', 'projectPath'], (result) => {
-      const editor = result.preferredEditor || 'vscode';
+    const { filePath, lineStart } = message as { action: string; filePath: string; lineStart?: number };
+    chrome.storage.local.get(['preferredEditor', 'projectPath'], (result: Settings) => {
+      const editor = (result.preferredEditor || 'vscode') as EditorType;
       const projectPath = result.projectPath || '';
-      const filePath = message.filePath;
-      const lineStart = message.lineStart;
 
       // Ensure absolute path
       const absolutePath = filePath.startsWith('/') || /^[A-Z]:/.test(filePath)
@@ -505,7 +519,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // Open in new tab (triggers editor protocol)
       chrome.tabs.create({ url: editorUrl, active: false }).then(tab => {
         setTimeout(() => {
-          chrome.tabs.remove(tab.id).catch(() => {});
+          if (tab.id) {
+            chrome.tabs.remove(tab.id).catch(() => {});
+          }
         }, 500);
       }).catch(err => {
         console.error('Failed to open file:', err);
@@ -520,16 +536,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Extension icon click - open side panel
 // Note: Chrome sidePanel API doesn't support programmatic closing.
 // Users must close the panel using the X button.
-chrome.action.onClicked.addListener(async (tab) => {
+chrome.action.onClicked.addListener(async (tab: chrome.tabs.Tab) => {
   const windowId = tab.windowId;
 
-  try {
-    await chrome.sidePanel.open({ windowId });
-    console.log('[SIDEPANEL] Opened for window:', windowId);
-  } catch (error) {
-    console.error('[SIDEPANEL] Failed to open:', error);
+  if (windowId !== undefined) {
+    try {
+      await chrome.sidePanel.open({ windowId });
+      console.log('[SIDEPANEL] Opened for window:', windowId);
+    } catch (error) {
+      console.error('[SIDEPANEL] Failed to open:', error);
+    }
   }
 });
 
 console.log('UI Chatter background worker started (per-tab WebSocket mode)');
+
 export {};
