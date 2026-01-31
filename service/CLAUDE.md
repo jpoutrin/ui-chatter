@@ -32,6 +32,18 @@ uv run pytest tests/test_auto_resume.py -v
 uv run pytest -k "test_auto_resume" -v
 ```
 
+## Type Checking
+
+**IMPORTANT**: After making any Python code edits in the service, always run type checking to catch type errors early.
+
+```bash
+# From the service directory
+builtin cd /Users/jeremiepoutrin/projects/github/jpoutrin/ui-chatter/service
+/usr/bin/make type-check
+```
+
+This project uses strict mypy configuration to ensure type safety. Running type checks before committing helps maintain code quality and catches potential runtime errors.
+
 ## Running the Service
 
 ```bash

@@ -56,3 +56,6 @@ Thumbs.db
 
 # UI Chatter
 .ui-chatter/
+
+# Local Configuration
+CLAUDE.local.md
