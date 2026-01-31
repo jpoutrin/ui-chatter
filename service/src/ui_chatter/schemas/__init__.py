@@ -1,10 +1,7 @@
-"""Schema definitions for API requests/responses."""
+"""Schema definitions for API requests/responses.
 
-from .websocket import WSChatRequest, WSResponse
-from .config import ConfigSchema
+Note: WebSocket message models are defined in ui_chatter.models.messages
+This module is reserved for future API schema definitions.
+"""
 
-__all__ = [
-    "WSChatRequest",
-    "WSResponse",
-    "ConfigSchema",
-]
+__all__: list[str] = []

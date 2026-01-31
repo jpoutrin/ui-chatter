@@ -1,7 +1,7 @@
 """Session state models."""
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
 
 
@@ -16,7 +16,7 @@ class AgentSession(BaseModel):
     last_activity: datetime = Field(
         default_factory=datetime.now, description="Last activity timestamp"
     )
-    metadata: dict = Field(default_factory=dict, description="Session metadata")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Session metadata")
 
     class Config:
         """Pydantic configuration."""

@@ -2,14 +2,14 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from .context import CapturedContext
 
-# Valid permission modes
+# Valid permission modes (matching Claude Agent SDK's ClaudeAgentOptions)
 PermissionMode = Literal[
-    "acceptEdits", "bypassPermissions", "default", "delegate", "dontAsk", "plan"
+    "acceptEdits", "bypassPermissions", "default", "plan"
 ]
 
 
@@ -97,9 +97,9 @@ class ToolActivity(BaseModel):
     tool_id: str = Field(..., description="Unique identifier for this tool call")
     tool_name: str = Field(..., description="Tool name (Read, Write, Edit, Bash, etc.)")
     status: ToolActivityStatus = Field(..., description="Current status of tool execution")
-    input_summary: Optional[str] = Field(None, description="Abbreviated tool input")
-    output_summary: Optional[str] = Field(None, description="Abbreviated tool output")
-    duration_ms: Optional[int] = Field(None, description="Execution time in milliseconds")
+    input_summary: Optional[str] = Field(default=None, description="Abbreviated tool input")
+    output_summary: Optional[str] = Field(default=None, description="Abbreviated tool output")
+    duration_ms: Optional[int] = Field(default=None, description="Execution time in milliseconds")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -118,8 +118,8 @@ class StreamControl(BaseModel):
     type: Literal["stream_control"] = "stream_control"
     action: StreamControlAction = Field(..., description="Stream lifecycle action")
     stream_id: str = Field(..., description="Unique stream session identifier")
-    reason: Optional[str] = Field(None, description="Reason for state change")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional context")
+    reason: Optional[str] = Field(default=None, description="Reason for state change")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional context")
 
 
 # Permission support models
@@ -132,7 +132,7 @@ class PermissionRequest(BaseModel):
     request_type: Literal["tool_approval", "ask_user_question"] = Field(..., description="Type of permission request")
     tool_name: Optional[str] = Field(None, description="Tool name (for tool_approval)")
     input_data: Optional[Dict[str, Any]] = Field(None, description="Tool parameters (for tool_approval)")
-    questions: Optional[list] = Field(None, description="Questions (for ask_user_question)")
+    questions: Optional[List[Any]] = Field(None, description="Questions (for ask_user_question)")
     timeout_seconds: int = Field(default=60, description="Seconds until auto-deny")
     timestamp: str = Field(..., description="ISO 8601 timestamp")
 
