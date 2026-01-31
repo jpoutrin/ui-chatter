@@ -3,7 +3,9 @@
 import asyncio
 import logging
 from typing import AsyncGenerator, Optional
-from anthropic import Anthropic, AsyncAnthropic
+
+from .types import WebSocketMessage
+from anthropic import Anthropic, AsyncAnthropic  # type: ignore[import-not-found]
 
 from .models.context import CapturedContext
 from .exceptions import AgentAuthError, AgentTimeoutError, AgentError
@@ -51,7 +53,7 @@ class AgentManager:
         context: CapturedContext,
         message: str,
         screenshot_path: Optional[str] = None,
-    ) -> AsyncGenerator[dict, None]:
+    ) -> AsyncGenerator[WebSocketMessage, None]:
         """
         Stream response from Claude with error handling.
 

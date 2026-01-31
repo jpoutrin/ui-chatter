@@ -4,9 +4,10 @@ import asyncio
 import json
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional
 
 from ..models.context import CapturedContext
+from ..types import WebSocketMessage
 
 
 class SessionState(Enum):
@@ -26,7 +27,7 @@ class AgentBackend(ABC):
     - Other future backends
     """
 
-    def __init__(self, project_path: str, **kwargs):
+    def __init__(self, project_path: str, **kwargs: Any) -> None:
         """
         Initialize backend.
 
@@ -71,11 +72,11 @@ class AgentBackend(ABC):
     @abstractmethod
     async def handle_chat(
         self,
-        context: CapturedContext,
+        context: Optional[CapturedContext],
         message: str,
         screenshot_path: Optional[str] = None,
         cancel_event: Optional[asyncio.Event] = None,
-    ) -> AsyncGenerator[dict, None]:
+    ) -> AsyncGenerator[WebSocketMessage, None]:
         """
         Stream response from Claude with error handling.
 
@@ -91,7 +92,9 @@ class AgentBackend(ABC):
         Yields:
             dict: Multi-channel messages (response_chunk, tool_activity, stream_control)
         """
-        pass
+        # This is an abstract async generator - must use yield to make it a generator
+        yield  # type: ignore[misc]
+        raise NotImplementedError
 
     @abstractmethod
     async def shutdown(self) -> None:

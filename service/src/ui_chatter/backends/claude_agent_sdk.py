@@ -5,14 +5,16 @@ import logging
 import time
 import uuid
 from datetime import datetime
-from typing import AsyncGenerator, Callable, Dict, Optional, Tuple
+from typing import Any, AsyncGenerator, AsyncIterable, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from claude_agent_sdk import query, ClaudeAgentOptions
 from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny, ToolPermissionContext
 
 from .base import AgentBackend
 from ..models.context import CapturedContext
+from ..types import WebSocketMessage
 from ..models.messages import (
+    PermissionMode,
     ToolActivity, ToolActivityStatus,
     StreamControl, StreamControlAction
 )
@@ -20,7 +22,7 @@ from ..models.messages import (
 logger = logging.getLogger(__name__)
 
 # Global cache for slash commands (shared across all backend instances)
-_SLASH_COMMANDS_CACHE: list[str] = []
+_SLASH_COMMANDS_CACHE: List[str] = []
 _SLASH_COMMANDS_INITIALIZED = False
 
 
@@ -32,8 +34,8 @@ def is_debug() -> bool:
 class PermissionRequestManager:
     """Manages pending permission requests from the SDK."""
 
-    def __init__(self):
-        self._pending_requests: Dict[str, dict] = {}
+    def __init__(self) -> None:
+        self._pending_requests: Dict[str, Dict[str, Any]] = {}
 
     def create_request(self) -> Tuple[str, asyncio.Event]:
         """Create a new permission request and return (request_id, event)."""
@@ -44,7 +46,7 @@ class PermissionRequestManager:
 
         return request_id, event
 
-    def resolve_request(self, request_id: str, result: dict) -> None:
+    def resolve_request(self, request_id: str, result: Dict[str, Any]) -> None:
         """Resolve a pending permission request with user's response."""
         if request_id in self._pending_requests:
             self._pending_requests[request_id]["result"] = result
@@ -67,14 +69,14 @@ class ClaudeAgentSDKBackend(AgentBackend):
     def __init__(
         self,
         project_path: str,
-        permission_mode: str = "bypassPermissions",
+        permission_mode: PermissionMode = "bypassPermissions",
         resume_session_id: Optional[str] = None,  # For explicit resume
-        ws_send_callback: Optional[Callable] = None,  # NEW: WebSocket send callback
-        **kwargs
-    ):
+        ws_send_callback: Optional[Callable[[WebSocketMessage], Awaitable[None]]] = None,  # NEW: WebSocket send callback
+        **kwargs: Any
+    ) -> None:
         super().__init__(project_path)
         self.permission_mode = permission_mode
-        self.slash_commands = []  # Captured from SDK init message
+        self.slash_commands: List[str] = []  # Captured from SDK init message
         self.slash_commands_initialized = False  # Track if we've fetched commands
         self.allowed_tools = [
             "Read", "Write", "Edit", "Bash", "Glob", "Grep"
@@ -165,13 +167,37 @@ class ClaudeAgentSDKBackend(AgentBackend):
             _SLASH_COMMANDS_INITIALIZED = True  # Don't retry on every call
             self.slash_commands_initialized = True
 
+    async def _create_prompt_stream(
+        self,
+        prompt_text: str
+    ) -> AsyncIterable[dict[str, Any]]:
+        """
+        Convert a string prompt to an AsyncIterable stream for SDK streaming mode.
+
+        Required when using can_use_tool callback.
+
+        Args:
+            prompt_text: The formatted prompt string
+
+        Yields:
+            Message dict in SDK streaming format
+        """
+        yield {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": prompt_text
+            },
+            "parent_tool_use_id": None,
+        }
+
     async def handle_chat(
         self,
         context: Optional[CapturedContext],
         message: str,
         screenshot_path: Optional[str] = None,
         cancel_event: Optional[asyncio.Event] = None,
-    ) -> AsyncGenerator[dict, None]:
+    ) -> AsyncGenerator[WebSocketMessage, None]:
         """
         Stream response using Claude Agent SDK with multi-channel protocol.
 
@@ -197,9 +223,9 @@ class ClaudeAgentSDKBackend(AgentBackend):
                 stream_id=stream_id
             ).model_dump()
             # Build prompt with context
-            prompt = self._build_prompt(context, message, screenshot_path)
+            prompt_text = self._build_prompt(context, message, screenshot_path)
 
-            logger.info(f"[AGENT SDK] Sending prompt to Claude Agent SDK (length: {len(prompt)} chars)")
+            logger.info(f"[AGENT SDK] Sending prompt to Claude Agent SDK (length: {len(prompt_text)} chars)")
             logger.info(f"[AGENT SDK] Permission mode: {self.permission_mode}")
             logger.info(f"[AGENT SDK] Allowed tools: {self.allowed_tools}")
 
@@ -208,7 +234,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
                 logger.debug("=" * 80)
                 logger.debug("CLAUDE AGENT SDK INPUT - USER PROMPT:")
                 logger.debug("-" * 80)
-                logger.debug(prompt)
+                logger.debug(prompt_text)
                 logger.debug("=" * 80)
 
             # Stream from SDK (NO api_key needed - auto-detects from ~/.claude/config)
@@ -235,7 +261,10 @@ class ClaudeAgentSDKBackend(AgentBackend):
                     can_use_tool=self._can_use_tool_callback,  # NEW: Permission callback
                 )
 
-            async for msg in query(prompt=prompt, options=options):
+            # Convert to streaming mode (required when using can_use_tool callback)
+            prompt_stream = self._create_prompt_stream(prompt_text)
+
+            async for msg in query(prompt=prompt_stream, options=options):
                 # Check for cancellation
                 if cancel_event and cancel_event.is_set():
                     logger.info(f"[AGENT SDK] Stream {stream_id} cancelled by user")
@@ -300,11 +329,15 @@ class ClaudeAgentSDKBackend(AgentBackend):
 
                 elif msg_type == "AssistantMessage":
                     # Process content blocks (text and tool use)
+                    if not hasattr(msg, 'content'):
+                        continue
                     for block in msg.content:
                         block_type = block.__class__.__name__
 
                         if block_type == "TextBlock":
                             # Yield text content
+                            if not hasattr(block, 'text'):
+                                continue
                             logger.debug(f"[AGENT SDK] Yielding text chunk: {len(block.text)} chars")
 
                             if is_debug() and block.text:
@@ -318,6 +351,8 @@ class ClaudeAgentSDKBackend(AgentBackend):
 
                         elif block_type == "ToolUseBlock":
                             # NEW: Track tool execution instead of discarding
+                            if not hasattr(block, 'id') or not hasattr(block, 'name') or not hasattr(block, 'input'):
+                                continue
                             tool_count += 1
                             tool_id = block.id
                             tool_name = block.name
@@ -418,7 +453,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
                 "message": error_message
             }
 
-    def _summarize_tool_input(self, tool_name: str, input_dict: dict) -> str:
+    def _summarize_tool_input(self, tool_name: str, input_dict: Dict[str, Any]) -> str:
         """
         Create human-readable summary of tool input.
 
@@ -445,7 +480,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
         else:
             return f"{tool_name} operation"
 
-    def _summarize_tool_output(self, content) -> Optional[str]:
+    def _summarize_tool_output(self, content: Any) -> Optional[str]:
         """
         Create abbreviated summary of tool output.
 
@@ -527,7 +562,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
     async def _can_use_tool_callback(
         self,
         tool_name: str,
-        input_data: dict,
+        input_data: Dict[str, Any],
         context: ToolPermissionContext
     ) -> PermissionResultAllow | PermissionResultDeny:
         """
@@ -541,9 +576,25 @@ class ClaudeAgentSDKBackend(AgentBackend):
             PermissionResultAllow: If approved (with optional modified input)
             PermissionResultDeny: If denied or timeout (with reason message)
         """
-        # Special handling for AskUserQuestion
-        if tool_name == "AskUserQuestion":
-            return await self._handle_ask_user_question(input_data)
+        # Meta tools that manage workflow (don't require user permission)
+        META_TOOLS = {
+            "AskUserQuestion",  # Multi-choice questions (has special handling)
+            "EnterPlanMode",    # Start planning mode
+            "ExitPlanMode",     # Exit planning mode
+            "TaskCreate",       # Create task in task list
+            "TaskUpdate",       # Update task status
+            "TaskGet",          # Get task details
+            "TaskList",         # List all tasks
+            "Skill",            # Invoke skills
+        }
+
+        # Auto-approve meta tools
+        if tool_name in META_TOOLS:
+            # Special handling for AskUserQuestion (show UI prompt)
+            if tool_name == "AskUserQuestion":
+                return await self._handle_ask_user_question(input_data)
+            # All other meta tools auto-approve
+            return PermissionResultAllow(updated_input=input_data)
 
         # Bypass mode: auto-approve everything
         if self.permission_mode == "bypassPermissions":
@@ -555,20 +606,24 @@ class ClaudeAgentSDKBackend(AgentBackend):
     async def _request_permission_from_ui(
         self,
         tool_name: str,
-        input_data: dict,
+        input_data: Dict[str, Any],
         context: ToolPermissionContext
     ) -> PermissionResultAllow | PermissionResultDeny:
         """Send permission request to UI and wait for user response."""
+        logger.info(f"[PERMISSION] _request_permission_from_ui called for tool: {tool_name}")
+        logger.info(f"[PERMISSION] ws_send_callback exists: {self.ws_send_callback is not None}")
+
         if not self.ws_send_callback:
             logger.warning("No WebSocket callback, denying permission")
             return PermissionResultDeny(message="No UI connection available")
 
         # Create permission request
         request_id, event = self.permission_manager.create_request()
+        logger.info(f"[PERMISSION] Created request_id: {request_id}")
 
         # Send request to UI via WebSocket with error handling
         try:
-            await self.ws_send_callback({
+            permission_msg = {
                 "type": "permission_request",
                 "request_id": request_id,
                 "request_type": "tool_approval",
@@ -576,11 +631,14 @@ class ClaudeAgentSDKBackend(AgentBackend):
                 "input_data": input_data,
                 "timeout_seconds": 60,
                 "timestamp": datetime.utcnow().isoformat()
-            })
+            }
+            logger.info(f"[PERMISSION] Sending permission request to UI: {permission_msg}")
+            await self.ws_send_callback(permission_msg)
+            logger.info(f"[PERMISSION] Permission request sent successfully")
         except Exception as e:
             # WebSocket send failed (disconnection, etc.)
             self.permission_manager.cleanup_request(request_id)
-            logger.warning(f"Failed to send permission request: {e}")
+            logger.error(f"[PERMISSION] Failed to send permission request: {e}", exc_info=True)
             return PermissionResultDeny(message=f"Connection lost: {e}")
 
         # Wait for user response with 60s timeout
@@ -609,7 +667,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
 
     async def _handle_ask_user_question(
         self,
-        input_data: dict
+        input_data: Dict[str, Any]
     ) -> PermissionResultAllow | PermissionResultDeny:
         """Handle AskUserQuestion tool - display multi-choice questions to user."""
         if not self.ws_send_callback:
@@ -654,7 +712,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
             self.permission_manager.cleanup_request(request_id)
             return PermissionResultDeny(message="Question timed out (60 seconds)")
 
-    def resolve_permission(self, request_id: str, response: dict) -> None:
+    def resolve_permission(self, request_id: str, response: Dict[str, Any]) -> None:
         """
         Called by WebSocket handler to resolve a permission request.
 
