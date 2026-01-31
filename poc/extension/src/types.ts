@@ -81,6 +81,13 @@ export interface ResponseChunkMessage {
   [key: string]: unknown;
 }
 
+export interface ThinkingMessage {
+  type: 'thinking';
+  content: string;
+  signature?: string;
+  done: boolean;
+}
+
 export interface StreamControlMessage {
   type: 'stream_control';
   action: 'started' | 'completed' | 'cancelled';
@@ -112,7 +119,9 @@ export interface ToolActivityMessage {
   tool_name: string;
   status: string;
   input_summary?: string;
-  input?: unknown;
+  input?: Record<string, unknown>;  // Full input data for expansion
+  output_summary?: string;
+  output?: unknown;  // Full output data for expansion
   duration_ms?: number;
   duration?: number;
   timestamp?: number;
@@ -139,6 +148,7 @@ export type ServerMessage =
   | HandshakeAckMessage
   | PingMessage
   | ResponseChunkMessage
+  | ThinkingMessage
   | StreamControlMessage
   | PermissionRequestMessage
   | AskUserQuestionMessage
