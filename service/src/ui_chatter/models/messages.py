@@ -41,6 +41,15 @@ class ResponseChunk(BaseModel):
     done: bool = Field(..., description="Whether this is the final chunk")
 
 
+class ThinkingMessage(BaseModel):
+    """Claude's extended thinking process."""
+
+    type: Literal["thinking"] = "thinking"
+    content: str = Field(..., description="Claude's thinking process")
+    signature: Optional[str] = Field(None, description="Signature verification (if available)")
+    done: bool = Field(False, description="Whether thinking is complete")
+
+
 class StatusUpdate(BaseModel):
     """Status update message."""
 
@@ -109,7 +118,9 @@ class ToolActivity(BaseModel):
     tool_name: str = Field(..., description="Tool name (Read, Write, Edit, Bash, etc.)")
     status: ToolActivityStatus = Field(..., description="Current status of tool execution")
     input_summary: Optional[str] = Field(default=None, description="Abbreviated tool input")
+    input: Optional[Dict[str, Any]] = Field(default=None, description="Full tool input for expansion in UI")
     output_summary: Optional[str] = Field(default=None, description="Abbreviated tool output")
+    output: Optional[Any] = Field(default=None, description="Full tool output for expansion in UI")
     duration_ms: Optional[int] = Field(default=None, description="Execution time in milliseconds")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
