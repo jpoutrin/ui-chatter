@@ -1,8 +1,11 @@
 """Read-only access to Claude Code's local session storage."""
 
 import json
+import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 
 class ClaudeMessage:
@@ -28,9 +31,61 @@ class SessionRepository:
     def __init__(self, project_path: str):
         self.project_path = project_path
         # Claude Code encodes project paths by replacing / with -
-        # and removing leading /
-        self.project_hash = project_path.lstrip('/').replace('/', '-')
+        # and adding a leading dash
+        self.project_hash = '-' + project_path.lstrip('/').replace('/', '-')
         self.sessions_dir = Path.home() / '.claude' / 'projects' / self.project_hash
+        logger.info(f"SessionRepository initialized with project_hash: {self.project_hash}")
+        logger.info(f"Session directory: {self.sessions_dir}")
+
+    def _extract_display_content(self, content: Any) -> str:
+        """
+        Extract display-friendly content from message.
+
+        Handles:
+        - String content (legacy format)
+        - Array content (Claude API format)
+        - JSON-structured content (new format)
+
+        For new format messages, extracts the display_message from the JSON context.
+        For old format messages, returns content as-is (backward compatible).
+        """
+        # Handle array format (Claude API)
+        if isinstance(content, list):
+            text_blocks = [block.get('text', '') for block in content if block.get('type') == 'text']
+            content = '\n'.join(text_blocks)
+
+        # Handle string format
+        if isinstance(content, str):
+            # Try to parse JSON-structured prompt
+            try:
+                # Look for "CONTEXT (JSON):" marker
+                if "CONTEXT (JSON):" in content:
+                    lines = content.split('\n')
+                    # Find the JSON block
+                    json_start = None
+                    for i, line in enumerate(lines):
+                        if line.strip() == "CONTEXT (JSON):":
+                            json_start = i + 1
+                            break
+
+                    if json_start:
+                        # Extract JSON (from json_start until next blank line)
+                        json_lines = []
+                        for line in lines[json_start:]:
+                            if line.strip() == "":
+                                break
+                            json_lines.append(line)
+
+                        # Parse JSON
+                        context_json = json.loads('\n'.join(json_lines))
+                        # Return display message
+                        return context_json.get('display_message', content)
+            except Exception:
+                # If parsing fails, fall back to returning content as-is
+                pass
+
+        # Fallback: return as-is
+        return str(content)
 
     def get_session_file_path(self, session_id: str) -> Path:
         """Get path to session JSONL file."""
@@ -45,6 +100,8 @@ class SessionRepository:
         Read conversation messages from Claude Code session.
 
         Returns only user/assistant messages, filters out system events.
+        For user messages, extracts display-friendly content (user's original message)
+        instead of the full technical context.
         """
         session_file = self.get_session_file_path(session_id)
 
@@ -65,9 +122,18 @@ class SessionRepository:
                         continue
 
                     msg_data = event.get('message', {})
+                    raw_content = msg_data.get('content')
+
+                    # Extract display-friendly content for user messages
+                    if msg_data.get('role') == 'user':
+                        display_content = self._extract_display_content(raw_content)
+                    else:
+                        # For assistant messages, keep as-is
+                        display_content = raw_content
+
                     messages.append(ClaudeMessage(
                         role=msg_data.get('role'),
-                        content=msg_data.get('content'),
+                        content=display_content,
                         timestamp=event.get('timestamp'),
                         uuid=event.get('uuid')
                     ))
