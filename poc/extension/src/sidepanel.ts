@@ -22,7 +22,9 @@ interface ToolActivity {
   name: string;
   status: string;
   input_summary: string;
-  input?: unknown;
+  input?: Record<string, unknown>;  // Full input data
+  output_summary?: string;  // Output summary
+  output?: unknown;  // Full output data
   duration_ms?: number;
   duration?: number;
   timestamp?: number;
@@ -66,6 +68,7 @@ let currentTabId: number | null = null;  // Browser tab ID currently being displ
 // Multi-channel streaming state
 const MessageType = {
   RESPONSE_CHUNK: 'response_chunk',
+  THINKING: 'thinking',
   TOOL_ACTIVITY: 'tool_activity',
   STREAM_CONTROL: 'stream_control',
   STATUS: 'status',
@@ -624,6 +627,12 @@ function handleServerMessage(message: ServerMessage): void {
       }
       break;
 
+    case MessageType.THINKING:
+      if (message.type === 'thinking') {
+        handleThinking(message);
+      }
+      break;
+
     case MessageType.TOOL_ACTIVITY:
       if (message.type === 'tool_activity') {
         handleToolActivity(message);
@@ -788,6 +797,49 @@ function handleResponseChunk(message) {
   elements.messages.scrollTop = elements.messages.scrollHeight;
 }
 
+// Handle thinking messages
+let thinkingPanel: HTMLElement | null = null;
+function handleThinking(message) {
+  const { content, signature, done } = message;
+
+  // Create or update thinking panel
+  if (!thinkingPanel) {
+    thinkingPanel = document.createElement('div');
+    thinkingPanel.className = 'thinking-panel';
+    thinkingPanel.innerHTML = `
+      <div class="thinking-header">
+        <span class="thinking-icon">🧠</span>
+        <span class="thinking-label">Claude is thinking...</span>
+        ${signature ? `<span class="thinking-signature">✓</span>` : ''}
+      </div>
+      <details class="thinking-details">
+        <summary>View extended thinking</summary>
+        <pre class="thinking-content"></pre>
+      </details>
+    `;
+    elements.messages.appendChild(thinkingPanel);
+  }
+
+  // Update content
+  const contentElement = thinkingPanel.querySelector('.thinking-content');
+  if (contentElement) {
+    contentElement.textContent = content;
+  }
+
+  // Auto-scroll
+  elements.messages.scrollTop = elements.messages.scrollHeight;
+
+  // Remove panel when thinking is done
+  if (done) {
+    setTimeout(() => {
+      if (thinkingPanel) {
+        thinkingPanel.remove();
+        thinkingPanel = null;
+      }
+    }, 500);
+  }
+}
+
 // Render markdown content with syntax highlighting
 function renderMarkdown(messageElement) {
   const rawContent = messageElement.dataset.rawContent;
@@ -843,14 +895,19 @@ function renderMarkdown(messageElement) {
 }
 
 function handleToolActivity(message: ToolActivityMessage): void {
-  const { tool_id, tool_name, status, input_summary, duration_ms } = message;
+  const { tool_id, tool_name, status, input_summary, input, output_summary, output, duration_ms } = message;
+
+  // Get existing tool data or create new
+  const existingTool = activeTools.get(tool_id);
 
   // Update tool map
   activeTools.set(tool_id, {
     name: tool_name,
     status,
-    input_summary,
-    input: input_summary,
+    input_summary: input_summary || '',
+    input: input || existingTool?.input,  // Preserve input from earlier messages
+    output_summary: output_summary || existingTool?.output_summary,
+    output: output || existingTool?.output,
     duration: duration_ms,
     timestamp: Date.now()
   });
@@ -918,11 +975,11 @@ function renderToolActivityPanel() {
     elements.messages.appendChild(activeToolPanel);
   }
 
-  const tools = Array.from(activeTools.values());
-  const completed = tools.filter(t => t.status === 'completed').length;
-  const executing = tools.filter(t => t.status === 'executing').length;
-  const pending = tools.filter(t => t.status === 'pending').length;
-  const failed = tools.filter(t => t.status === 'failed').length;
+  const tools = Array.from(activeTools.entries());
+  const completed = tools.filter(([_, t]) => t.status === 'completed').length;
+  const executing = tools.filter(([_, t]) => t.status === 'executing').length;
+  const pending = tools.filter(([_, t]) => t.status === 'pending').length;
+  const failed = tools.filter(([_, t]) => t.status === 'failed').length;
 
   activeToolPanel.innerHTML = `
     <div class="tool-panel-header">
@@ -931,13 +988,29 @@ function renderToolActivityPanel() {
       <button class="cancel-btn" onclick="cancelStream()">Cancel</button>
     </div>
     <div class="tool-list">
-      ${tools.map(t => `
+      ${tools.map(([tool_id, t]) => `
         <div class="tool-item tool-${t.status}">
           <span class="tool-status">${getStatusIcon(t.status)}</span>
           <span class="tool-name">${t.name}</span>
-          <span class="tool-input">${truncate(t.input || '', 40)}</span>
+          <span class="tool-input-summary">${truncate(t.input_summary || '', 40)}</span>
           <span class="tool-duration">${t.duration ? t.duration + 'ms' : ''}</span>
         </div>
+        ${t.input || t.output ? `
+          <div class="tool-details-wrapper">
+            ${t.input ? `
+              <details class="tool-details">
+                <summary class="tool-details-summary">Show input</summary>
+                <pre class="tool-details-content">${JSON.stringify(t.input, null, 2)}</pre>
+              </details>
+            ` : ''}
+            ${t.output_summary || t.output ? `
+              <details class="tool-details">
+                <summary class="tool-details-summary">Show output${t.output_summary ? ` (${truncate(t.output_summary, 50)})` : ''}</summary>
+                <pre class="tool-details-content">${typeof t.output === 'string' ? t.output : JSON.stringify(t.output, null, 2)}</pre>
+              </details>
+            ` : ''}
+          </div>
+        ` : ''}
       `).join('')}
     </div>
     <div class="tool-summary">
