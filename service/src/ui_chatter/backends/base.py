@@ -1,9 +1,19 @@
 """Abstract base class for agent backends."""
 
+import asyncio
+import json
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import AsyncGenerator, Optional
 
 from ..models.context import CapturedContext
+
+
+class SessionState(Enum):
+    """Backend session state."""
+    NOT_STARTED = "not_started"      # No SDK session yet
+    ESTABLISHED = "established"      # SDK session created and active
+    ENDED = "ended"                  # Session ended, cannot resume
 
 
 class AgentBackend(ABC):
@@ -25,28 +35,61 @@ class AgentBackend(ABC):
             **kwargs: Backend-specific configuration
         """
         self.project_path = project_path
+        self._session_state = SessionState.NOT_STARTED
+        self._sdk_session_id: Optional[str] = None
+
+    @property
+    def session_state(self) -> SessionState:
+        """Get current session state."""
+        return self._session_state
+
+    @property
+    def sdk_session_id(self) -> Optional[str]:
+        """Get SDK session ID if session is established."""
+        return self._sdk_session_id if self._session_state == SessionState.ESTABLISHED else None
+
+    @property
+    def has_established_session(self) -> bool:
+        """Check if backend has an established SDK session."""
+        return self._session_state == SessionState.ESTABLISHED and self._sdk_session_id is not None
+
+    def set_sdk_session_id(self, session_id: str) -> None:
+        """
+        Set SDK session ID when captured from SystemMessage.
+
+        Args:
+            session_id: SDK session ID from SystemMessage.data['session_id']
+        """
+        self._sdk_session_id = session_id
+        self._session_state = SessionState.ESTABLISHED
+
+    def reset_session(self) -> None:
+        """Reset session state (for creating new conversation)."""
+        self._sdk_session_id = None
+        self._session_state = SessionState.NOT_STARTED
 
     @abstractmethod
     async def handle_chat(
         self,
         context: CapturedContext,
         message: str,
-        is_first_message: bool = False,
         screenshot_path: Optional[str] = None,
+        cancel_event: Optional[asyncio.Event] = None,
     ) -> AsyncGenerator[dict, None]:
         """
         Stream response from Claude with error handling.
 
+        NOTE: Removed is_first_message parameter - backends should use
+        self.has_established_session to determine resume behavior.
+
         Args:
             context: Captured UI context from browser
             message: User's message/request
-            is_first_message: True if this is the first message in the session (for backends that manage history)
             screenshot_path: Optional path to screenshot file
+            cancel_event: Optional event to signal cancellation
 
         Yields:
-            dict: Response chunks with structure:
-                - {"type": "response_chunk", "content": str, "done": bool}
-                - {"type": "error", "code": str, "message": str}
+            dict: Multi-channel messages (response_chunk, tool_activity, stream_control)
         """
         pass
 
@@ -62,46 +105,45 @@ class AgentBackend(ABC):
         screenshot_path: Optional[str],
     ) -> str:
         """
-        Build prompt from UI context and user message.
+        Build structured prompt with JSON-formatted context.
 
-        Shared implementation for backends that don't manage history themselves.
+        Returns a prompt that includes:
+        1. Display message (for chat history)
+        2. JSON context (for Claude to parse)
+        3. Clear instructions
+
+        The JSON structure allows extracting the user's original message
+        when loading chat history, instead of showing the full technical context.
         """
         element = context.element
 
-        # Build element description
-        element_desc = f"<{element.tagName}"
-        if element.id:
-            element_desc += f' id="{element.id}"'
-        if element.classList:
-            element_desc += f' class="{" ".join(element.classList)}"'
-        element_desc += ">"
+        # Build context JSON
+        context_json = {
+            "display_message": message,  # Store user's original message
+            "element": {
+                "tagName": element.tagName,
+                "id": element.id,
+                "classList": element.classList,
+                "textContent": element.textContent,
+                "xpath": element.xpath,
+                "cssSelector": element.cssSelector,
+            },
+            "page": {
+                "url": context.page.url if context.page else None,
+                "title": context.page.title if context.page else None,
+            }
+        }
 
-        # Build full prompt
+        # Build structured prompt
         prompt_parts = [
             "You are helping modify a web application's code based on UI element feedback.",
             "",
-            f"The user selected this element: {element_desc}",
+            "CONTEXT (JSON):",
+            json.dumps(context_json, indent=2),
+            "",
+            f"USER REQUEST: {message}",
+            "",
+            "Please provide a helpful response about how to implement this change.",
         ]
-
-        if element.textContent:
-            prompt_parts.append(f"Text content: {element.textContent}")
-
-        if element.xpath:
-            prompt_parts.append(f"XPath: {element.xpath}")
-
-        if element.cssSelector:
-            prompt_parts.append(f"CSS Selector: {element.cssSelector}")
-
-        if context.page:
-            prompt_parts.append(f"On page: {context.page.url}")
-
-        prompt_parts.extend(
-            [
-                "",
-                f"User request: {message}",
-                "",
-                "Please provide a helpful response about how to implement this change.",
-            ]
-        )
 
         return "\n".join(prompt_parts)
