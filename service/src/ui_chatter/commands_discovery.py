@@ -5,9 +5,12 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from .backends.base import AgentBackend
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +40,7 @@ class CommandDiscovery:
     - all: Both agent and shell commands
     """
 
-    def __init__(self, project_path: str, backend) -> None:
+    def __init__(self, project_path: str, backend: "AgentBackend") -> None:
         """
         Initialize command discovery.
 
@@ -47,7 +50,7 @@ class CommandDiscovery:
         """
         self.project_path = Path(project_path).resolve()
         self.backend = backend
-        self._cache: dict = {}
+        self._cache: Dict[str, List[Command]] = {}
         self._cache_ttl = {"agent": float("inf"), "shell": 60}  # Agent: session lifetime, shell: 60s
 
     async def discover_commands(self, mode: str = "agent") -> List[Command]:
@@ -199,7 +202,7 @@ class CommandDiscovery:
         logger.info(f"Found {len(commands)} agent commands from filesystem")
         return commands
 
-    def _parse_command_metadata(self, cmd_file: Path) -> dict:
+    def _parse_command_metadata(self, cmd_file: Path) -> Dict[str, Any]:
         """
         Parse YAML frontmatter from command markdown file.
 

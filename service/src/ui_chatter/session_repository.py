@@ -79,7 +79,8 @@ class SessionRepository:
                         # Parse JSON
                         context_json = json.loads('\n'.join(json_lines))
                         # Return display message
-                        return context_json.get('display_message', content)
+                        display_msg = context_json.get('display_message', content)
+                        return str(display_msg)
             except Exception:
                 # If parsing fails, fall back to returning content as-is
                 pass
@@ -151,7 +152,8 @@ class SessionRepository:
 
         try:
             data = json.loads(index_file.read_text())
-            return data.get('entries', [])
+            entries = data.get('entries', [])
+            return list(entries) if isinstance(entries, list) else []
         except (json.JSONDecodeError, FileNotFoundError):
             return []
 

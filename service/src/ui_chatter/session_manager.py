@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional, List, TYPE_CHECKING
 
 from .backends import AgentBackend, ClaudeAgentSDKBackend
+from .models.messages import PermissionMode
+from .types import WsSendCallback
 
 if TYPE_CHECKING:
     from .session_store import SessionStore
@@ -22,9 +24,9 @@ class AgentSession:
         session_id: str,
         project_path: str,
         backend: AgentBackend,
-        permission_mode: str = "plan",
-        ws_send_callback = None
-    ):
+        permission_mode: PermissionMode = "plan",
+        ws_send_callback: Optional[WsSendCallback] = None
+    ) -> None:
         self.session_id = session_id
         self.project_path = project_path
         self.created_at = datetime.now()
@@ -55,7 +57,7 @@ class SessionManager:
         self,
         max_idle_minutes: int = 30,
         project_path: str = ".",
-        permission_mode: str = "bypassPermissions",
+        permission_mode: PermissionMode = "bypassPermissions",
         session_store: Optional["SessionStore"] = None,
         session_repository: Optional["SessionRepository"] = None,
     ):
@@ -63,7 +65,7 @@ class SessionManager:
         self.project_path = project_path
         self.permission_mode = permission_mode
         self.sessions: Dict[str, AgentSession] = {}
-        self._cleanup_task: Optional[asyncio.Task] = None
+        self._cleanup_task: Optional[asyncio.Task[None]] = None
         self.session_store = session_store
         self.session_repository = session_repository
 
@@ -73,9 +75,9 @@ class SessionManager:
         self,
         session_id: str,
         project_path: str,
-        permission_mode: Optional[str] = None,
+        permission_mode: Optional[PermissionMode] = None,
         resume_session_id: Optional[str] = None,
-        ws_send_callback = None
+        ws_send_callback: Optional[WsSendCallback] = None
     ) -> AgentBackend:
         """Create ClaudeAgentSDKBackend (only backend)."""
         mode = permission_mode or self.permission_mode
@@ -91,12 +93,12 @@ class SessionManager:
     async def create_session(
         self,
         session_id: str,
-        permission_mode: Optional[str] = None,
+        permission_mode: Optional[PermissionMode] = None,
         sdk_session_id: Optional[str] = None,
         page_url: Optional[str] = None,
         tab_id: Optional[str] = None,
         auto_resume: bool = True,
-        ws_send_callback = None,
+        ws_send_callback: Optional[WsSendCallback] = None,
     ) -> AgentSession:
         """
         Create new isolated agent session with configured backend.
@@ -112,7 +114,8 @@ class SessionManager:
 
         # Attempt auto-resume if enabled and context provided
         if auto_resume and settings.AUTO_RESUME_ENABLED and page_url and tab_id and self.session_store:
-            base_url = normalize_url_for_matching(page_url)
+            base_url: Optional[str] = normalize_url_for_matching(page_url)
+            assert base_url is not None, "normalize_url_for_matching returned None for truthy page_url"
 
             # Check if other tabs have active conversations for this URL
             other_tabs_active = await self.session_store.has_other_active_tabs(
@@ -214,7 +217,7 @@ class SessionManager:
         """
         # Update in-memory session
         session = self.sessions.get(session_id)
-        if session:
+        if session and self.session_store:
             # Backend already has it set, just persist to DB
             await self.session_store.set_sdk_session_id(session_id, sdk_session_id)
             logger.info(
@@ -367,7 +370,7 @@ class SessionManager:
 
         return recovered_count
 
-    async def update_permission_mode(self, session_id: str, new_mode: str) -> None:
+    async def update_permission_mode(self, session_id: str, new_mode: PermissionMode) -> None:
         """Update permission mode for existing session."""
         session = self.sessions.get(session_id)
         if not session:
