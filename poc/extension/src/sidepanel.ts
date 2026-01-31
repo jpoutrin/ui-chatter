@@ -429,6 +429,9 @@ async function handleSessionSwitch(event) {
 
       console.log('[UI CHATTER] Switch successful, new SDK session:', currentSdkSessionId);
 
+      // Clear current messages before loading new session history
+      clearMessages();
+
       // Load chat history for the resumed session
       await loadChatHistory(currentSessionId);
 
