@@ -317,6 +317,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  else if (message.type === 'register_tab_session') {
+    // Register or update tab session info after handshake
+    const { tabId, sessionId, sdkSessionId, pageUrl } = message;
+    const connection = tabConnections[tabId];
+
+    if (connection) {
+      connection.sessionId = sessionId;
+      connection.sdkSessionId = sdkSessionId;
+      connection.pageUrl = pageUrl;
+      console.log(`[TAB ${tabId}] Session registered - sessionId: ${sessionId}, sdkSessionId: ${sdkSessionId}`);
+      sendResponse({ success: true });
+    } else {
+      console.warn(`[TAB ${tabId}] No connection found to register session`);
+      sendResponse({ success: false, error: 'No connection found' });
+    }
+    return true;
+  }
+
   else if (message.type === 'element_selected') {
     // Forward to side panel (ignore if not open)
     try {
