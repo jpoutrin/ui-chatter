@@ -49,6 +49,20 @@ class Settings(BaseSettings):
     WS_PROTOCOL_PING_INTERVAL: float = 15.0  # Protocol ping interval (seconds)
     WS_PROTOCOL_PING_TIMEOUT: float = 10.0   # Protocol pong timeout (seconds)
 
+    # File listing settings
+    FILE_LISTING_MAX_DEPTH: int = 10
+    FILE_LISTING_CACHE_TTL: int = 30  # seconds
+    FILE_LISTING_DEFAULT_LIMIT: int = 100
+
+    # Command discovery settings
+    COMMAND_CACHE_TTL: int = 60  # seconds
+    COMMAND_DEFAULT_LIMIT: int = 50
+
+    # Auto-resume settings
+    AUTO_RESUME_ENABLED: bool = True
+    AUTO_RESUME_MAX_AGE_MINUTES: int = 30
+    AUTO_RESUME_MATCH_STRATEGY: Literal["base_url", "exact"] = "base_url"
+
 
 # Global settings instance
 settings = Settings()
