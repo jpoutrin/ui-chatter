@@ -56,6 +56,14 @@ class HandshakeMessage(BaseModel):
     permission_mode: PermissionMode = Field(
         "plan", description="Permission mode for Claude CLI"
     )
+    page_url: Optional[str] = Field(
+        None,
+        description="Current page URL for auto-resume"
+    )
+    tab_id: Optional[str] = Field(
+        None,
+        description="Browser tab ID for session isolation"
+    )
 
 
 class UpdatePermissionModeMessage(BaseModel):
