@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .context import CapturedContext
 
@@ -16,10 +16,21 @@ PermissionMode = Literal[
 class ChatRequest(BaseModel):
     """Chat request from extension."""
 
+    # Allow both 'context' and 'element_context' as field names
+    model_config = ConfigDict(populate_by_name=True)
+
     type: Literal["chat"] = "chat"
-    context: Optional[CapturedContext] = Field(None, description="Captured UI context (optional)")
-    screenshot: Optional[str] = Field(None, description="Base64-encoded screenshot")
     message: str = Field(..., description="User's message")
+    context: Optional[CapturedContext] = Field(
+        None,
+        alias="element_context",  # Accept 'element_context' from extension
+        description="Captured UI context (optional)"
+    )
+    selected_text: Optional[str] = Field(
+        None,
+        description="Selected text from the page (optional)"
+    )
+    screenshot: Optional[str] = Field(None, description="Base64-encoded screenshot")
 
 
 class ResponseChunk(BaseModel):

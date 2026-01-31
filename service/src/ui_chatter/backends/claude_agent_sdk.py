@@ -5,14 +5,38 @@ import logging
 import time
 import uuid
 from datetime import datetime
-from typing import Any, AsyncGenerator, AsyncIterable, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import (
+    Any, AsyncGenerator, AsyncIterable, Awaitable, Callable,
+    Literal, TypedDict, TypeGuard, cast, TYPE_CHECKING
+)
+from typing_extensions import NotRequired
 
 from claude_agent_sdk import query, ClaudeAgentOptions
-from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny, ToolPermissionContext
+from claude_agent_sdk.types import (
+    # Permission types
+    PermissionResult, PermissionResultAllow, PermissionResultDeny,
+    PermissionMode as SDKPermissionMode, ToolPermissionContext,
+    PermissionUpdate, PermissionBehavior,
+
+    # Message types
+    Message, UserMessage, AssistantMessage,
+    SystemMessage, ResultMessage, StreamEvent,
+    AssistantMessageError,
+
+    # Content block types
+    ContentBlock, TextBlock, ThinkingBlock,
+    ToolUseBlock, ToolResultBlock,
+
+    # Options
+    ClaudeAgentOptions,
+)
 
 from .base import AgentBackend
 from ..models.context import CapturedContext
-from ..types import WebSocketMessage
+from ..types import (
+    WebSocketMessage,
+    ResponseChunkDict, ErrorDict, SessionEstablishedDict,
+)
 from ..models.messages import (
     PermissionMode,
     ToolActivity, ToolActivityStatus,
@@ -22,7 +46,7 @@ from ..models.messages import (
 logger = logging.getLogger(__name__)
 
 # Global cache for slash commands (shared across all backend instances)
-_SLASH_COMMANDS_CACHE: List[str] = []
+_SLASH_COMMANDS_CACHE: list[str] = []
 _SLASH_COMMANDS_INITIALIZED = False
 
 # Constants for robustness and clarity
@@ -39,6 +63,90 @@ SDK_BLOCK_TEXT = "TextBlock"
 SDK_BLOCK_TOOL_USE = "ToolUseBlock"
 
 
+# ============================================================================
+# TypedDict Definitions for Internal Data Structures
+# ============================================================================
+
+# Permission request structures
+class PendingPermissionRequest(TypedDict):
+    """Structure for pending permission requests."""
+    event: asyncio.Event
+    result: "PermissionResponse | None"
+
+
+class PermissionResponse(TypedDict):
+    """User's response to a permission request."""
+    approved: bool
+    modified_input: NotRequired[dict[str, Any]]
+    answers: NotRequired[dict[str, str]]  # Question key -> answer
+    reason: NotRequired[str]
+
+
+# Error codes for classification
+ErrorCode = Literal[
+    "auth_failed", "permission_denied", "rate_limit",
+    "timeout", "internal", "execution_failed"
+]
+
+
+class ToolApprovalRequest(TypedDict):
+    """Tool approval permission request."""
+    type: Literal["permission_request"]
+    request_id: str
+    request_type: Literal["tool_approval"]
+    tool_name: str
+    input_data: dict[str, Any]
+    timeout_seconds: int
+    timestamp: str
+
+
+class AskUserQuestionRequest(TypedDict):
+    """AskUserQuestion permission request."""
+    type: Literal["permission_request"]
+    request_id: str
+    request_type: Literal["ask_user_question"]
+    questions: list[dict[str, Any]]
+    timeout_seconds: int
+    timestamp: str
+
+
+# Tool name types
+ToolName = Literal["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
+MetaToolName = Literal[
+    "AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
+    "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "Skill"
+]
+
+
+# ============================================================================
+# TypeGuard Functions for Runtime Type Narrowing
+# ============================================================================
+
+def is_text_block(block: ContentBlock) -> TypeGuard[TextBlock]:
+    """Type guard for TextBlock."""
+    return isinstance(block, TextBlock)
+
+
+def is_tool_use_block(block: ContentBlock) -> TypeGuard[ToolUseBlock]:
+    """Type guard for ToolUseBlock."""
+    return isinstance(block, ToolUseBlock)
+
+
+def is_result_message(msg: Message) -> TypeGuard[ResultMessage]:
+    """Type guard for ResultMessage."""
+    return isinstance(msg, ResultMessage)
+
+
+def is_assistant_message(msg: Message) -> TypeGuard[AssistantMessage]:
+    """Type guard for AssistantMessage."""
+    return isinstance(msg, AssistantMessage)
+
+
+def is_system_message(msg: Message) -> TypeGuard[SystemMessage]:
+    """Type guard for SystemMessage."""
+    return isinstance(msg, SystemMessage)
+
+
 def is_debug() -> bool:
     """Check if debug logging is enabled."""
     return logger.isEnabledFor(logging.DEBUG)
@@ -48,9 +156,9 @@ class PermissionRequestManager:
     """Manages pending permission requests from the SDK."""
 
     def __init__(self) -> None:
-        self._pending_requests: Dict[str, Dict[str, Any]] = {}
+        self._pending_requests: dict[str, PendingPermissionRequest] = {}
 
-    def create_request(self) -> Tuple[str, asyncio.Event]:
+    def create_request(self) -> tuple[str, asyncio.Event]:
         """Create a new permission request and return (request_id, event)."""
         request_id = str(uuid.uuid4())  # Use UUID to prevent collisions on service restart
 
@@ -59,7 +167,7 @@ class PermissionRequestManager:
 
         return request_id, event
 
-    def resolve_request(self, request_id: str, result: Dict[str, Any]) -> None:
+    def resolve_request(self, request_id: str, result: PermissionResponse) -> None:
         """Resolve a pending permission request with user's response."""
         if request_id in self._pending_requests:
             self._pending_requests[request_id]["result"] = result
@@ -83,19 +191,19 @@ class ClaudeAgentSDKBackend(AgentBackend):
         self,
         project_path: str,
         permission_mode: PermissionMode = "bypassPermissions",
-        resume_session_id: Optional[str] = None,  # For explicit resume
-        ws_send_callback: Optional[Callable[[WebSocketMessage], Awaitable[None]]] = None,  # NEW: WebSocket send callback
+        resume_session_id: str | None = None,  # For explicit resume
+        ws_send_callback: Callable[[WebSocketMessage], Awaitable[None]] | None = None,  # NEW: WebSocket send callback
         **kwargs: Any
     ) -> None:
         super().__init__(project_path)
-        self.permission_mode = permission_mode
-        self.slash_commands: List[str] = []  # Captured from SDK init message
-        self.slash_commands_initialized = False  # Track if we've fetched commands
-        self.allowed_tools = [
+        self.permission_mode: PermissionMode = permission_mode
+        self.slash_commands: list[str] = []  # Captured from SDK init message
+        self.slash_commands_initialized: bool = False  # Track if we've fetched commands
+        self.allowed_tools: list[str] = [
             "Read", "Write", "Edit", "Bash", "Glob", "Grep"
         ]
-        self.ws_send_callback = ws_send_callback  # NEW: Callback to send messages to UI
-        self.permission_manager = PermissionRequestManager()  # NEW: Permission request manager
+        self.ws_send_callback: Callable[[WebSocketMessage], Awaitable[None]] | None = ws_send_callback
+        self.permission_manager: PermissionRequestManager = PermissionRequestManager()
 
         # If resuming an existing session, set it
         if resume_session_id:
@@ -251,10 +359,11 @@ class ClaudeAgentSDKBackend(AgentBackend):
 
     async def handle_chat(
         self,
-        context: Optional[CapturedContext],
+        context: CapturedContext | None,
         message: str,
-        screenshot_path: Optional[str] = None,
-        cancel_event: Optional[asyncio.Event] = None,
+        screenshot_path: str | None = None,
+        cancel_event: asyncio.Event | None = None,
+        selected_text: str | None = None,
     ) -> AsyncGenerator[WebSocketMessage, None]:
         """
         Stream response using Claude Agent SDK with multi-channel protocol.
@@ -264,6 +373,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
             message: User's message
             screenshot_path: Optional path to screenshot file
             cancel_event: Optional event to signal cancellation
+            selected_text: Optional selected text from the page
 
         Yields:
             dict: Multi-channel messages (response_chunk, tool_activity, stream_control)
@@ -285,7 +395,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
             ).model_dump()
 
             # Build prompt with context
-            prompt_text = self._build_prompt(context, message, screenshot_path)
+            prompt_text = self._build_prompt(context, message, screenshot_path, selected_text)
 
             logger.info(f"[AGENT SDK] Sending prompt to Claude Agent SDK (length: {len(prompt_text)} chars)")
             logger.info(f"[AGENT SDK] Permission mode: {self.permission_mode}")
@@ -512,7 +622,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
                 "message": error_message
             }
 
-    def _summarize_tool_input(self, tool_name: str, input_dict: Dict[str, Any]) -> str:
+    def _summarize_tool_input(self, tool_name: str, input_dict: dict[str, Any]) -> str:
         """
         Create human-readable summary of tool input.
 
@@ -539,7 +649,10 @@ class ClaudeAgentSDKBackend(AgentBackend):
         else:
             return f"{tool_name} operation"
 
-    def _summarize_tool_output(self, content: Any) -> Optional[str]:
+    def _summarize_tool_output(
+        self,
+        content: str | list[ContentBlock] | None
+    ) -> str | None:
         """
         Create abbreviated summary of tool output.
 
@@ -559,21 +672,19 @@ class ClaudeAgentSDKBackend(AgentBackend):
             return content
 
         # Handle list of content blocks
-        if isinstance(content, list):
-            text_parts = []
-            for block in content:
-                if hasattr(block, 'text'):
-                    text = block.text
-                    if len(text) > 100:
-                        text_parts.append(text[:100] + "...")
-                    else:
-                        text_parts.append(text)
+        text_parts: list[str] = []
+        for block in content:
+            if is_text_block(block):
+                # block is now TextBlock - text attribute available
+                text: str = block.text
+                if len(text) > 100:
+                    text_parts.append(text[:100] + "...")
+                else:
+                    text_parts.append(text)
 
-            return " ".join(text_parts) if text_parts else None
+        return " ".join(text_parts) if text_parts else None
 
-        return None
-
-    def _classify_error(self, error: Exception) -> str:
+    def _classify_error(self, error: Exception) -> ErrorCode:
         """Classify error type for appropriate handling."""
         error_str = str(error).lower()
 
@@ -588,14 +699,15 @@ class ClaudeAgentSDKBackend(AgentBackend):
         else:
             return "internal"
 
-    def _get_error_message(self, code: str, error: Exception) -> str:
+    def _get_error_message(self, code: ErrorCode, error: Exception) -> str:
         """Get user-friendly error message."""
-        messages = {
+        messages: dict[ErrorCode, str] = {
             "auth_failed": "Authentication failed. Please run 'claude login' in terminal to authenticate.",
             "permission_denied": "Permission denied. Try switching to bypass mode in session settings.",
             "rate_limit": "Rate limit exceeded. Please try again in a few moments.",
             "timeout": "Request timed out. Please try again.",
-            "internal": f"An unexpected error occurred: {str(error)}"
+            "internal": f"An unexpected error occurred: {str(error)}",
+            "execution_failed": "Claude encountered an error while processing your request."
         }
         return messages.get(code, str(error))
 
@@ -621,9 +733,9 @@ class ClaudeAgentSDKBackend(AgentBackend):
     async def _can_use_tool_callback(
         self,
         tool_name: str,
-        input_data: Dict[str, Any],
+        input_data: dict[str, Any],
         context: ToolPermissionContext
-    ) -> PermissionResultAllow | PermissionResultDeny:
+    ) -> PermissionResult:
         """
         Permission callback for Claude Agent SDK.
 
@@ -636,7 +748,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
             PermissionResultDeny: If denied or timeout (with reason message)
         """
         # Meta tools that manage workflow (don't require user permission)
-        META_TOOLS = {
+        META_TOOLS: set[MetaToolName] = {
             "AskUserQuestion",  # Multi-choice questions (has special handling)
             "EnterPlanMode",    # Start planning mode
             "ExitPlanMode",     # Exit planning mode
@@ -665,9 +777,9 @@ class ClaudeAgentSDKBackend(AgentBackend):
     async def _request_permission_from_ui(
         self,
         tool_name: str,
-        input_data: Dict[str, Any],
+        input_data: dict[str, Any],
         context: ToolPermissionContext
-    ) -> PermissionResultAllow | PermissionResultDeny:
+    ) -> PermissionResult:
         """Send permission request to UI and wait for user response."""
         logger.info(f"[PERMISSION] _request_permission_from_ui called for tool: {tool_name}")
         logger.info(f"[PERMISSION] ws_send_callback exists: {self.ws_send_callback is not None}")
@@ -708,6 +820,9 @@ class ClaudeAgentSDKBackend(AgentBackend):
             result = self.permission_manager._pending_requests[request_id]["result"]
             self.permission_manager.cleanup_request(request_id)
 
+            if result is None:
+                return PermissionResultDeny(message="No response received")
+
             if result["approved"]:
                 return PermissionResultAllow(
                     updated_input=result.get("modified_input") or input_data
@@ -726,8 +841,8 @@ class ClaudeAgentSDKBackend(AgentBackend):
 
     async def _handle_ask_user_question(
         self,
-        input_data: Dict[str, Any]
-    ) -> PermissionResultAllow | PermissionResultDeny:
+        input_data: dict[str, Any]
+    ) -> PermissionResult:
         """Handle AskUserQuestion tool - display multi-choice questions to user."""
         if not self.ws_send_callback:
             return PermissionResultDeny(message="No UI connection available")
@@ -756,6 +871,9 @@ class ClaudeAgentSDKBackend(AgentBackend):
             result = self.permission_manager._pending_requests[request_id]["result"]
             self.permission_manager.cleanup_request(request_id)
 
+            if result is None:
+                return PermissionResultDeny(message="No response received")
+
             if result["approved"]:
                 # Return answers in SDK format
                 return PermissionResultAllow(
@@ -771,7 +889,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
             self.permission_manager.cleanup_request(request_id)
             return PermissionResultDeny(message="Question timed out (60 seconds)")
 
-    def resolve_permission(self, request_id: str, response: Dict[str, Any]) -> None:
+    def resolve_permission(self, request_id: str, response: PermissionResponse) -> None:
         """
         Called by WebSocket handler to resolve a permission request.
 
@@ -794,9 +912,10 @@ class ClaudeAgentSDKBackend(AgentBackend):
         """
         # Deny all pending permissions
         for request_id in list(self.permission_manager._pending_requests.keys()):
-            self.permission_manager.resolve_request(request_id, {
+            response: PermissionResponse = {
                 "approved": False,
                 "reason": "Backend shutdown during pending request"
-            })
+            }
+            self.permission_manager.resolve_request(request_id, response)
 
         logger.info("Claude Agent SDK backend shutdown complete")

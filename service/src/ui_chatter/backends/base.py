@@ -76,6 +76,7 @@ class AgentBackend(ABC):
         message: str,
         screenshot_path: Optional[str] = None,
         cancel_event: Optional[asyncio.Event] = None,
+        selected_text: Optional[str] = None,
     ) -> AsyncGenerator[WebSocketMessage, None]:
         """
         Stream response from Claude with error handling.
@@ -88,6 +89,7 @@ class AgentBackend(ABC):
             message: User's message/request
             screenshot_path: Optional path to screenshot file
             cancel_event: Optional event to signal cancellation
+            selected_text: Optional selected text from the page
 
         Yields:
             dict: Multi-channel messages (response_chunk, tool_activity, stream_control)
@@ -106,6 +108,7 @@ class AgentBackend(ABC):
         context: Optional[CapturedContext],
         message: str,
         screenshot_path: Optional[str],
+        selected_text: Optional[str] = None,
     ) -> str:
         """
         Build structured prompt with JSON-formatted context.
@@ -113,13 +116,16 @@ class AgentBackend(ABC):
         Returns a prompt that includes:
         1. Display message (for chat history)
         2. JSON context (for Claude to parse, if provided)
-        3. Clear instructions
+        3. Selected text (if provided)
+        4. Clear instructions
 
         The JSON structure allows extracting the user's original message
         when loading chat history, instead of showing the full technical context.
         """
-        # If no context provided, just return the message
+        # If no context provided, just return the message (with selected text if present)
         if context is None:
+            if selected_text:
+                return f"{message}\n\nSelected text from page:\n{selected_text}"
             return message
 
         element = context.element
@@ -140,6 +146,10 @@ class AgentBackend(ABC):
                 "title": context.page.title if context.page else None,
             }
         }
+
+        # Add selected text if provided
+        if selected_text:
+            context_json["selected_text"] = selected_text
 
         # Build structured prompt
         prompt_parts = [

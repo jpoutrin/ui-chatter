@@ -59,3 +59,56 @@ uv run ui-chatter
 uv run ui-chatter --port 3456 --debug
 uv run ui-chatter --project /path/to/project
 ```
+
+## Python Development Best Practices
+
+### Use LSP MCP for Type Intelligence
+
+**IMPORTANT**: When performing Python coding operations, always leverage the LSP (Language Server Protocol) MCP for type intelligence and validation.
+
+The LSP MCP provides:
+- **Type Discovery**: Query existing type annotations in dependencies
+- **Usage Analysis**: Find all places where types should be added
+- **Real-Time Validation**: Get type checking feedback as you code
+- **Hover Information**: See type definitions without file switching
+- **Go-to-Definition**: Navigate to type sources easily
+
+Example workflow:
+```bash
+# LSP is already configured via claude-code-dev:install-lsp skill
+# Use LSP hover to check type information
+# Use LSP diagnostics to validate types in real-time
+# Use LSP completion for type-aware suggestions
+```
+
+### Leverage Python Expert Agents
+
+**IMPORTANT**: For complex Python tasks, always use the Python expert agents from the `python-experts` skill family.
+
+Available Python expert agents:
+- `python-experts:mypy-check` - Run Mypy type checking with detailed error reporting
+- `python-experts:mypy-setup` - Set up Mypy configuration for a project
+- `python-experts:django-expert` - Django web application specialist
+- `python-experts:fastapi-expert` - FastAPI specialist for async APIs
+- `python-experts:python-testing-expert` - Testing specialist for pytest
+- `python-experts:python-style` - Enforce Python coding style and PEP standards
+
+Example usage:
+```bash
+# After making type changes, use mypy-check skill
+/python-experts:mypy-check
+
+# For Django-specific work
+/python-experts:django-expert
+
+# For testing guidance
+/python-experts:python-testing-expert
+```
+
+**When to use Python experts:**
+- Complex typing scenarios (generics, protocols, TypedDicts)
+- Django ORM and view implementations
+- FastAPI endpoint design with async/await
+- Pytest fixture design and test architecture
+- Type hint migration and modernization
+- Performance optimization and profiling

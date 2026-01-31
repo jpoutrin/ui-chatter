@@ -15,6 +15,42 @@ export interface TabConnection {
   status: ConnectionStatus;
 }
 
+// Element capture types
+export interface AncestorInfo {
+  tagName: string;
+  id: string | undefined;
+  classList: string[];
+}
+
+export interface BoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface ElementInfo {
+  tagName: string;
+  id: string | undefined;
+  classList: string[];
+  textContent: string;
+  attributes: Record<string, string>;
+  boundingBox: BoundingBox;
+  xpath: string;
+  cssSelector: string;
+}
+
+export interface PageInfo {
+  url: string;
+  title: string;
+}
+
+export interface CapturedElement {
+  element: ElementInfo;
+  ancestors: AncestorInfo[];
+  page: PageInfo;
+}
+
 // WebSocket message types (from server)
 export interface HandshakeMessage {
   type: 'handshake';
@@ -47,7 +83,9 @@ export interface ResponseChunkMessage {
 
 export interface StreamControlMessage {
   type: 'stream_control';
-  action: 'started' | 'completed';
+  action: 'started' | 'completed' | 'cancelled';
+  stream_id?: string;
+  metadata?: unknown;
 }
 
 export interface PermissionRequestMessage {
@@ -68,6 +106,35 @@ export interface AskUserQuestionMessage {
   timeout_seconds?: number;
 }
 
+export interface ToolActivityMessage {
+  type: 'tool_activity';
+  tool_id: string;
+  tool_name: string;
+  status: string;
+  input_summary?: string;
+  input?: unknown;
+  duration_ms?: number;
+  duration?: number;
+  timestamp?: number;
+}
+
+export interface StatusMessage {
+  type: 'status';
+  status: string;
+  detail?: string;
+}
+
+export interface ErrorMessage {
+  type: 'error';
+  message: string;
+}
+
+export interface SessionClearedMessage {
+  type: 'session_cleared';
+  sdk_session_id: string;
+  message?: string;
+}
+
 export type ServerMessage =
   | HandshakeAckMessage
   | PingMessage
@@ -75,7 +142,10 @@ export type ServerMessage =
   | StreamControlMessage
   | PermissionRequestMessage
   | AskUserQuestionMessage
-  | { type: string; [key: string]: unknown };
+  | ToolActivityMessage
+  | StatusMessage
+  | ErrorMessage
+  | SessionClearedMessage;
 
 export type ClientMessage =
   | HandshakeMessage
@@ -112,7 +182,7 @@ export interface SendChatRuntimeMessage {
   type: 'send_chat';
   message: string;
   selectedText?: string | null;
-  elementContext?: unknown;
+  elementContext?: CapturedElement | null;
 }
 
 export interface CancelRequestRuntimeMessage {
@@ -185,7 +255,7 @@ export interface DisconnectTabRuntimeMessage {
 
 export interface ElementSelectedRuntimeMessage {
   type: 'element_selected';
-  context: unknown;
+  context: CapturedElement;
 }
 
 export interface ClearSessionRuntimeMessage {
@@ -243,6 +313,43 @@ export type RuntimeMessage =
   | GetTabConnectionRuntimeMessage
   | OpenFileActionMessage;
 
+// Background to Sidepanel message types
+export interface ConnectionStatusBackgroundMessage {
+  type: 'connection_status';
+  status: ConnectionStatus;
+  tabId: number;
+}
+
+export interface ElementCapturedBackgroundMessage {
+  type: 'element_captured';
+  context: CapturedElement;
+}
+
+export interface ServerMessageBackgroundMessage {
+  type: 'server_message';
+  message: ServerMessage;
+}
+
+export interface TabSwitchedBackgroundMessage {
+  type: 'tab_switched';
+  tabId: number;
+  sessionId: string | null;
+  sdkSessionId: string | null;
+}
+
+export interface TabUrlChangedBackgroundMessage {
+  type: 'tab_url_changed';
+  tabId: number;
+  pageUrl: string;
+}
+
+export type BackgroundToSidepanelMessage =
+  | ConnectionStatusBackgroundMessage
+  | ElementCapturedBackgroundMessage
+  | ServerMessageBackgroundMessage
+  | TabSwitchedBackgroundMessage
+  | TabUrlChangedBackgroundMessage;
+
 // Editor protocol builder function type
 export type EditorProtocolBuilder = (filePath: string, lineStart?: number) => string;
 
@@ -252,4 +359,31 @@ export interface Settings {
   maxFilesDisplayed?: number;
   projectPath?: string;
   permissionMode?: PermissionMode;
+}
+
+// Type Guards and Validation Functions
+
+// Validate PermissionMode
+export function isValidPermissionMode(value: unknown): value is PermissionMode {
+  return value === 'plan' || value === 'bypassPermissions' || value === 'acceptEdits';
+}
+
+// Validate EditorType
+export function isValidEditorType(value: unknown): value is EditorType {
+  return (
+    value === 'vscode' ||
+    value === 'cursor' ||
+    value === 'webstorm' ||
+    value === 'sublime' ||
+    value === 'vim'
+  );
+}
+
+// DOM element type guards
+export function isHTMLElement(node: unknown): node is HTMLElement {
+  return node instanceof HTMLElement;
+}
+
+export function isElement(node: unknown): node is Element {
+  return node instanceof Element;
 }

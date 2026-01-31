@@ -1,41 +1,14 @@
 // Content script for UI element capture
 
+import type {
+  AncestorInfo,
+  BoundingBox,
+  ElementInfo,
+  PageInfo,
+  CapturedElement
+} from './types.js';
+
 // Type definitions
-interface AncestorInfo {
-  tagName: string;
-  id: string | undefined;
-  classList: string[];
-}
-
-interface BoundingBox {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-interface ElementInfo {
-  tagName: string;
-  id: string | undefined;
-  classList: string[];
-  textContent: string;
-  attributes: Record<string, string>;
-  boundingBox: BoundingBox;
-  xpath: string;
-  cssSelector: string;
-}
-
-interface PageInfo {
-  url: string;
-  title: string;
-}
-
-interface CapturedElement {
-  element: ElementInfo;
-  ancestors: AncestorInfo[];
-  page: PageInfo;
-}
-
 interface ChromeMessage {
   type: string;
   context?: CapturedElement;

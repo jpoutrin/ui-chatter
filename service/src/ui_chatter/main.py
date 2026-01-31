@@ -628,6 +628,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     message=chat_request.message,
                     screenshot_path=screenshot_path,
                     cancel_event=cancel_event,
+                    selected_text=chat_request.selected_text,
                 ):
                     chunk_type = response.get("type")
 

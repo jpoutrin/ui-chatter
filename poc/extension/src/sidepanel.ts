@@ -2,8 +2,12 @@
 import type {
   ServerMessage,
   PermissionMode,
-  HandshakeAckMessage
-} from './types';
+  HandshakeAckMessage,
+  CapturedElement,
+  BackgroundToSidepanelMessage,
+  StreamControlMessage,
+  ToolActivityMessage
+} from './types.js';
 
 // Type definitions
 interface SdkSession {
@@ -50,7 +54,7 @@ interface Elements {
 }
 
 // State variables
-let currentContext: unknown = null;
+let currentContext: CapturedElement | null = null;
 let isConnected: boolean = false;
 let currentSessionId: string | null = null;  // WebSocket session ID
 let currentSdkSessionId: string | null = null;  // Agent SDK session ID
@@ -125,13 +129,13 @@ const elements: Elements = {
 };
 
 // Listen for messages from background script
-chrome.runtime.onMessage.addListener((message: { type: string; [key: string]: unknown }) => {
+chrome.runtime.onMessage.addListener((message: BackgroundToSidepanelMessage) => {
   if (message.type === 'connection_status') {
     updateConnectionStatus(message.status === 'connected');
   } else if (message.type === 'element_captured') {
     handleElementCaptured(message.context);
   } else if (message.type === 'server_message') {
-    handleServerMessage(message.message as ServerMessage);
+    handleServerMessage(message.message);
   } else if (message.type === 'tab_switched') {
     // NEW: Handle tab switch
     handleTabSwitch(message);
@@ -554,7 +558,7 @@ async function switchToSdkSession(targetSdkSessionId) {
 }
 
 // Handle element selection
-function handleElementCaptured(context) {
+function handleElementCaptured(context: CapturedElement): void {
   currentContext = context;
   const el = context.element;
 
@@ -570,7 +574,7 @@ function handleElementCaptured(context) {
 }
 
 // Handle server messages - multi-channel protocol
-function handleServerMessage(message) {
+function handleServerMessage(message: ServerMessage): void {
   const { type } = message;
 
   switch(type) {
@@ -609,21 +613,29 @@ function handleServerMessage(message) {
       break;
 
     case MessageType.STREAM_CONTROL:
-      handleStreamControl(message);
+      if (message.type === 'stream_control') {
+        handleStreamControl(message);
+      }
       break;
 
     case MessageType.RESPONSE_CHUNK:
-      handleResponseChunk(message);
+      if (message.type === 'response_chunk') {
+        handleResponseChunk(message);
+      }
       break;
 
     case MessageType.TOOL_ACTIVITY:
-      handleToolActivity(message);
+      if (message.type === 'tool_activity') {
+        handleToolActivity(message);
+      }
       break;
 
     case MessageType.STATUS:
       // Legacy status messages
-      if (message.status !== 'thinking' && message.status !== 'done') {
-        addMessage('status', message.detail || message.status);
+      if (message.type === 'status') {
+        if (message.status !== 'thinking' && message.status !== 'done') {
+          addMessage('status', message.detail || message.status);
+        }
       }
       break;
 
@@ -669,13 +681,15 @@ function handleServerMessage(message) {
       break;
 
     case MessageType.ERROR:
-      addMessage('error', message.message);
-      hideStreamingUI();
+      if (message.type === 'error') {
+        addMessage('error', message.message);
+        hideStreamingUI();
+      }
       break;
   }
 }
 
-function handleStreamControl(message) {
+function handleStreamControl(message: StreamControlMessage): void {
   const { action, stream_id, metadata } = message;
 
   switch(action) {
@@ -828,7 +842,7 @@ function renderMarkdown(messageElement) {
   }
 }
 
-function handleToolActivity(message) {
+function handleToolActivity(message: ToolActivityMessage): void {
   const { tool_id, tool_name, status, input_summary, duration_ms } = message;
 
   // Update tool map
@@ -1278,7 +1292,7 @@ function sendMessage() {
   // Send to background script (context is optional)
   chrome.runtime.sendMessage({
     type: 'send_chat',
-    context: currentContext || null,
+    elementContext: currentContext || null,
     message
   });
 }
