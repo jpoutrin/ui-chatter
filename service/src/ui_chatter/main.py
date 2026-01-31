@@ -56,14 +56,15 @@ async def lifespan(app: FastAPI):
     # Get permission mode from environment or use settings default
     permission_mode = os.environ.get("PERMISSION_MODE", settings.PERMISSION_MODE)
 
+    # Initialize stream controller for cancellation support (BEFORE connection_manager)
+    stream_controller = StreamController()
+
     connection_manager = ConnectionManager(
         max_connections=settings.MAX_CONNECTIONS,
         ping_interval=settings.WS_PING_INTERVAL,
-        ping_timeout=settings.WS_PING_TIMEOUT
+        ping_timeout=settings.WS_PING_TIMEOUT,
+        stream_controller=stream_controller
     )
-
-    # Initialize stream controller for cancellation support
-    stream_controller = StreamController()
 
     # Initialize session storage
     session_store = SessionStore(project_path=project_path)
@@ -430,7 +431,10 @@ async def websocket_endpoint(websocket: WebSocket):
             logger.debug(f"[WS IN] {session_id[:8]}... | {msg_type} | {json.dumps(data)[:200]}")
 
             if data["type"] == "cancel_request":
-                # Handle stream cancellation request
+                # This should never be reached - cancel_request is handled immediately in receiver loop
+                logger.warning(f"[WS MAIN] Cancel request reached main loop (should be handled in receiver)")
+
+                # Keep as defensive fallback
                 stream_id = data.get("stream_id")
                 if stream_id:
                     success = stream_controller.cancel_stream(stream_id)
@@ -498,10 +502,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     except Exception as e:
                         logger.warning(f"Failed to save screenshot: {e}")
 
-                # Create stream with cancellation support
-                # Extract stream_id from first response or generate one
-                current_stream_id = None
-                cancel_event = None
+                # Create stream with cancellation support BEFORE starting the stream
+                # Generate stream_id upfront so cancel_event can be created immediately
+                current_stream_id = f"stream-{uuid.uuid4()}"
+                cancel_event = stream_controller.create_stream(current_stream_id)
+                logger.info(f"Stream {current_stream_id} created with cancellation support (before backend call)")
 
                 # Send thinking status
                 await connection_manager.send_message(
@@ -509,7 +514,17 @@ async def websocket_endpoint(websocket: WebSocket):
                     {"type": "status", "status": "thinking", "detail": None},
                 )
 
-                # Stream response from agent backend with cancellation support (no is_first_message needed)
+                # Send stream started control message
+                await connection_manager.send_message(
+                    session_id,
+                    {
+                        "type": "stream_control",
+                        "action": "started",
+                        "stream_id": current_stream_id
+                    }
+                )
+
+                # Stream response from agent backend with cancellation support
                 async for response in session.backend.handle_chat(
                     context=chat_request.context,
                     message=chat_request.message,
@@ -536,20 +551,45 @@ async def websocket_endpoint(websocket: WebSocket):
                         # Don't forward to client
                         continue
 
-                    # Capture stream_id from first stream_control message
-                    if chunk_type == "stream_control" and response.get("action") == "started":
-                        current_stream_id = response.get("stream_id")
-                        # Create cancel event for this stream
-                        cancel_event = stream_controller.create_stream(current_stream_id)
-                        logger.info(f"Stream {current_stream_id} started with cancellation support")
+                    # Handle stream_control messages from backend
+                    if chunk_type == "stream_control":
+                        action = response.get("action")
+                        if action == "cancelled":
+                            # Backend detected cancellation - forward to client with our stream_id
+                            await connection_manager.send_message(
+                                session_id,
+                                {
+                                    "type": "stream_control",
+                                    "action": "cancelled",
+                                    "stream_id": current_stream_id,
+                                    "reason": response.get("reason", "user_request")
+                                }
+                            )
+                            logger.info(f"Stream {current_stream_id} cancelled by user")
+                            # Cleanup and exit loop
+                            stream_controller.cleanup_stream(current_stream_id)
+                            break
+                        else:
+                            # Skip other stream_control messages (started, completed) - we handle these
+                            logger.debug(f"Skipping backend stream_control message: {action}")
+                            continue
 
                     await connection_manager.send_message(session_id, response)
+                else:
+                    # Loop completed normally (not cancelled)
+                    # Send completion message
+                    await connection_manager.send_message(
+                        session_id,
+                        {
+                            "type": "stream_control",
+                            "action": "completed",
+                            "stream_id": current_stream_id
+                        }
+                    )
+                    logger.info(f"Stream {current_stream_id} completed successfully")
 
-                    # Cleanup stream after completion or cancellation
-                    if chunk_type == "stream_control" and response.get("action") in ["completed", "cancelled"]:
-                        if current_stream_id:
-                            stream_controller.cleanup_stream(current_stream_id)
-                            logger.info(f"Stream {current_stream_id} cleaned up")
+                    # Cleanup stream
+                    stream_controller.cleanup_stream(current_stream_id)
 
                 # Send done status
                 await connection_manager.send_message(

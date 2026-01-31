@@ -29,7 +29,8 @@ class ConnectionManager:
         max_connections: int = 100,
         ping_interval: int = 20,
         ping_timeout: int = 10,
-        session_store: Optional[SessionStore] = None
+        session_store: Optional[SessionStore] = None,
+        stream_controller: Optional['StreamController'] = None
     ):
         self.max_connections = max_connections
         self.ping_interval = ping_interval  # seconds between pings
@@ -41,6 +42,7 @@ class ConnectionManager:
         self.last_pong_time: Dict[str, float] = {}  # Track last pong receipt
         self.pong_events: Dict[str, asyncio.Event] = {}  # Signal pong receipt
         self.session_store = session_store
+        self.stream_controller = stream_controller
 
     async def connect(self, session_id: str, websocket: WebSocket) -> None:
         """
@@ -280,6 +282,25 @@ class ConnectionManager:
                         self.mark_pong_received(session_id)
                         # Don't queue pongs - they're handled here
                         continue
+
+                    # Handle cancel_request immediately (critical for responsiveness)
+                    if data.get("type") == "cancel_request":
+                        stream_id = data.get("stream_id")
+                        if stream_id and self.stream_controller:
+                            success = self.stream_controller.cancel_stream(stream_id)
+                            logger.info(f"[WS RECEIVER] Immediate cancel for stream {stream_id}: {'success' if success else 'failed'}")
+                            # Send acknowledgment directly
+                            await self.send_message(
+                                session_id,
+                                {
+                                    "type": "status",
+                                    "status": "cancelled" if success else "error",
+                                    "detail": "Stream cancelled" if success else "Stream not found"
+                                }
+                            )
+                        else:
+                            logger.warning(f"[WS RECEIVER] Cancel request missing stream_id or controller unavailable")
+                        continue  # Don't queue cancel requests
 
                     # Queue all other messages for processing
                     queue = self.message_queues.get(session_id)
