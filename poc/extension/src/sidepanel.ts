@@ -982,7 +982,7 @@ const AutocompleteController = {
     this.inputElement = elements.messageInput;
 
     if (!this.dropdown || !this.listElement || !this.inputElement) {
-      console.error('[AUTOCOMPLETE] Required DOM elements not found');
+      // console.error('[AUTOCOMPLETE] Required DOM elements not found');
       return;
     }
 
@@ -1003,7 +1003,7 @@ const AutocompleteController = {
       }, 150);
     });
 
-    console.log('[AUTOCOMPLETE] Controller initialized');
+    // console.log('[AUTOCOMPLETE] Controller initialized');
   },
 
   async handleInput(e) {
@@ -1015,11 +1015,11 @@ const AutocompleteController = {
     // Use \- to escape hyphen for safety
     const slashMatch = textBeforeCursor.match(/\/([\w:\-]*)$/);
 
-    console.log('[AUTOCOMPLETE] Input event:', { input, cursorPos, textBeforeCursor, slashMatch });
+    // console.log('[AUTOCOMPLETE] Input event:', { input, cursorPos, textBeforeCursor, slashMatch });
 
     if (slashMatch) {
       const prefix = '/' + slashMatch[1];
-      console.log('[AUTOCOMPLETE] Slash detected, prefix:', prefix);
+      // console.log('[AUTOCOMPLETE] Slash detected, prefix:', prefix);
       if (prefix !== this.currentPrefix) {
         this.currentPrefix = prefix;
         await this.fetchSuggestions(prefix);
@@ -1030,11 +1030,11 @@ const AutocompleteController = {
   },
 
   async fetchSuggestions(prefix) {
-    console.log('[AUTOCOMPLETE] fetchSuggestions called with prefix:', prefix);
-    console.log('[AUTOCOMPLETE] currentSessionId:', currentSessionId);
+    // console.log('[AUTOCOMPLETE] fetchSuggestions called with prefix:', prefix);
+    // console.log('[AUTOCOMPLETE] currentSessionId:', currentSessionId);
 
     if (!currentSessionId) {
-      console.warn('[AUTOCOMPLETE] No active session - hiding autocomplete');
+      // console.warn('[AUTOCOMPLETE] No active session - hiding autocomplete');
       this.suggestions = [];
       this.hide();
       return;
@@ -1047,30 +1047,30 @@ const AutocompleteController = {
 
     try {
       const url = `http://localhost:3456/api/v1/projects/${currentSessionId}/commands?mode=agent&prefix=${encodeURIComponent(prefix)}&limit=20`;
-      console.log('[AUTOCOMPLETE] Fetching from:', url);
+      // console.log('[AUTOCOMPLETE] Fetching from:', url);
       const response = await fetch(url, { signal: this.abortController.signal });
 
-      console.log('[AUTOCOMPLETE] Response status:', response.status);
+      // console.log('[AUTOCOMPLETE] Response status:', response.status);
 
       if (!response.ok) {
         throw new Error(`API error: ${response.status}`);
       }
 
       const data = await response.json();
-      console.log('[AUTOCOMPLETE] Received data:', data);
+      // console.log('[AUTOCOMPLETE] Received data:', data);
       this.suggestions = data.commands || [];
-      console.log('[AUTOCOMPLETE] Suggestions:', this.suggestions);
+      // console.log('[AUTOCOMPLETE] Suggestions:', this.suggestions);
       this.render();
 
     } catch (error) {
       if (error.name === 'AbortError') return;
-      console.error('[AUTOCOMPLETE] Failed to fetch:', error);
+      // console.error('[AUTOCOMPLETE] Failed to fetch:', error);
       this.hide();
     }
   },
 
   render() {
-    console.log('[AUTOCOMPLETE] render() called, suggestions count:', this.suggestions.length);
+    // console.log('[AUTOCOMPLETE] render() called, suggestions count:', this.suggestions.length);
     this.listElement.innerHTML = '';
 
     if (this.suggestions.length === 0) {
@@ -1181,13 +1181,13 @@ const AutocompleteController = {
     this.hide();
     input.focus();
 
-    console.log('[AUTOCOMPLETE] Inserted:', selected.command);
+    // console.log('[AUTOCOMPLETE] Inserted:', selected.command);
   },
 
   show() {
-    console.log('[AUTOCOMPLETE] show() called');
+    // console.log('[AUTOCOMPLETE] show() called');
     const inputRect = this.inputElement.getBoundingClientRect();
-    console.log('[AUTOCOMPLETE] Input rect:', inputRect);
+    // console.log('[AUTOCOMPLETE] Input rect:', inputRect);
 
     // Position above the input box
     const dropdownHeight = Math.min(400, this.suggestions.length * 60); // Estimate height
@@ -1197,7 +1197,7 @@ const AutocompleteController = {
     this.dropdown.style.width = `${Math.max(inputRect.width, 300)}px`;
     this.dropdown.style.display = 'block';
 
-    console.log('[AUTOCOMPLETE] Dropdown positioned above input');
+    // console.log('[AUTOCOMPLETE] Dropdown positioned above input');
     this.isVisible = true;
   },
 
@@ -1440,7 +1440,7 @@ elements.messageInput.addEventListener('keypress', (e) => {
 
 // Initialize autocomplete
 (function() {
-  console.log('[AUTOCOMPLETE] Initializing...');
+  // console.log('[AUTOCOMPLETE] Initializing...');
   AutocompleteController.init();
 })();
 

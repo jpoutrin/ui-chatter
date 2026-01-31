@@ -199,7 +199,7 @@ class ConnectionManager:
         self.last_pong_time[session_id] = time.time()
         if session_id in self.pong_events:
             self.pong_events[session_id].set()
-        logger.debug(f"[WS PONG] {session_id[:8]}... | Pong received")
+        # logger.debug(f"[WS PONG] {session_id[:8]}... | Pong received")
 
     async def _ping_loop(self, session_id: str) -> None:
         """
@@ -222,7 +222,7 @@ class ConnectionManager:
 
                 try:
                     # Send ping
-                    logger.debug(f"[WS PING] {session_id[:8]}... | Sending ping")
+                    # logger.debug(f"[WS PING] {session_id[:8]}... | Sending ping")
                     await websocket.send_json({"type": "ping"})
 
                     # Wait for pong with timeout
