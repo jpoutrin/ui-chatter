@@ -1,8 +1,11 @@
-// Background service worker - manages WebSocket connection
+// Background service worker - manages per-tab WebSocket connections
 const WS_URL = 'ws://localhost:3456/ws';
-let ws = null;
-let reconnectTimer = null;
 let currentPermissionMode = 'plan';
+
+// Per-tab WebSocket connections
+// tabId -> {ws, sessionId, sdkSessionId, reconnectTimer, pageUrl, status}
+let tabConnections = {};
+let currentActiveTab = null;
 
 // Editor protocol builders
 const EDITOR_PROTOCOLS = {
@@ -40,40 +43,84 @@ function normalizePathForUrl(filePath) {
   return filePath;
 }
 
-// Connect to WebSocket server
-async function connect() {
-  if (ws?.readyState === WebSocket.OPEN) return;
+// Connect to WebSocket server for a specific tab
+async function connectTab(tabId, pageUrl) {
+  // Check if already connected
+  if (tabConnections[tabId]?.ws?.readyState === WebSocket.OPEN) {
+    console.log(`[TAB ${tabId}] Already connected`);
+    return tabConnections[tabId];
+  }
 
-  console.log('Connecting to server...');
-  ws = new WebSocket(WS_URL);
+  console.log(`[TAB ${tabId}] Connecting to server...`);
+
+  const ws = new WebSocket(WS_URL);
+  const connection = {
+    ws,
+    sessionId: null,
+    sdkSessionId: null,
+    pageUrl,
+    status: 'connecting',
+    reconnectTimer: null
+  };
+
+  tabConnections[tabId] = connection;
 
   ws.onopen = async () => {
-    console.log('Connected to POC server');
+    console.log(`[TAB ${tabId}] Connected to server`);
+    connection.status = 'connected';
 
     // Retrieve current permission mode from storage
     const result = await chrome.storage.local.get(['permissionMode']);
     currentPermissionMode = result.permissionMode || 'plan';
 
-    // Send handshake with permission mode
+    // Send handshake with tab context
     const handshakeMsg = {
       type: 'handshake',
-      permission_mode: currentPermissionMode
+      permission_mode: currentPermissionMode,
+      page_url: pageUrl,
+      tab_id: tabId.toString()
     };
-    console.log('[WS OUT] handshake', handshakeMsg);
+
+    console.log(`[TAB ${tabId}] [WS OUT] handshake`, handshakeMsg);
     ws.send(JSON.stringify(handshakeMsg));
-    broadcastStatus('connected');
+
+    // Notify side panel if this is the active tab
+    if (tabId === currentActiveTab) {
+      broadcastStatus('connected', tabId);
+    }
   };
 
   ws.onclose = () => {
-    console.log('Disconnected from server');
-    broadcastStatus('disconnected');
-    // Reconnect after 3 seconds
-    reconnectTimer = setTimeout(connect, 3000);
+    console.log(`[TAB ${tabId}] Disconnected from server`);
+    connection.status = 'disconnected';
+
+    // Notify side panel if this is the active tab
+    if (tabId === currentActiveTab) {
+      broadcastStatus('disconnected', tabId);
+    }
+
+    // Attempt reconnection after 3 seconds (only if tab still exists)
+    connection.reconnectTimer = setTimeout(async () => {
+      try {
+        // Check if tab still exists
+        await chrome.tabs.get(tabId);
+        console.log(`[TAB ${tabId}] Reconnecting...`);
+        connectTab(tabId, pageUrl);
+      } catch (err) {
+        // Tab was closed, cleanup
+        console.log(`[TAB ${tabId}] Tab closed, not reconnecting`);
+        delete tabConnections[tabId];
+      }
+    }, 3000);
   };
 
   ws.onerror = (error) => {
-    console.error('WebSocket error:', error);
-    broadcastStatus('error');
+    console.error(`[TAB ${tabId}] WebSocket error:`, error);
+    connection.status = 'error';
+
+    if (tabId === currentActiveTab) {
+      broadcastStatus('error', tabId);
+    }
   };
 
   ws.onmessage = (event) => {
@@ -81,43 +128,71 @@ async function connect() {
 
     // Handle ping/pong keepalive
     if (message.type === 'ping') {
-      console.log('[WS] Received ping, sending pong');
+      console.log(`[TAB ${tabId}] [WS] Received ping, sending pong`);
       ws.send(JSON.stringify({ type: 'pong' }));
       return;
     }
 
-    // Debug log all incoming messages
-    console.log('[WS IN]', message.type, message);
+    // Store session IDs
+    if (message.type === 'handshake_ack') {
+      connection.sessionId = message.session_id;
+      connection.sdkSessionId = message.sdk_session_id || null;
+      console.log(`[TAB ${tabId}] Session established: ${connection.sessionId}`);
+    }
 
-    // Forward to side panel (ignore if not open)
-    try {
-      chrome.runtime.sendMessage({
-        type: 'server_message',
-        message
-      }, () => {
-        if (chrome.runtime.lastError) {
-          // Side panel not open, that's ok
-        }
-      });
-    } catch (err) {
-      // Ignore errors
+    // Debug log all incoming messages
+    console.log(`[TAB ${tabId}] [WS IN]`, message.type, message);
+
+    // Forward to side panel (only if this is the active tab)
+    if (tabId === currentActiveTab) {
+      try {
+        chrome.runtime.sendMessage({
+          type: 'server_message',
+          message,
+          tabId
+        }, () => {
+          if (chrome.runtime.lastError) {
+            // Side panel not open, that's ok
+          }
+        });
+      } catch (err) {
+        // Ignore errors
+      }
     }
   };
+
+  return connection;
 }
 
-// Store connection status
-let connectionStatus = 'disconnected';
+// Disconnect and cleanup a tab's connection
+function disconnectTab(tabId) {
+  const connection = tabConnections[tabId];
+  if (!connection) return;
 
-// Broadcast connection status to all tabs
-function broadcastStatus(status) {
-  connectionStatus = status;
-  // Try to send, but ignore if no one is listening
+  console.log(`[TAB ${tabId}] Disconnecting...`);
+
+  // Clear reconnect timer
+  if (connection.reconnectTimer) {
+    clearTimeout(connection.reconnectTimer);
+  }
+
+  // Close WebSocket
+  if (connection.ws) {
+    connection.ws.close();
+  }
+
+  // Remove from map
+  delete tabConnections[tabId];
+}
+
+// Broadcast connection status to side panel
+function broadcastStatus(status, tabId) {
   try {
     chrome.runtime.sendMessage({
       type: 'connection_status',
-      status
+      status,
+      tabId
     }, () => {
-      // Ignore errors if no receiver
       if (chrome.runtime.lastError) {
         // Side panel not open, that's ok
       }
@@ -127,9 +202,122 @@ function broadcastStatus(status) {
   }
 }
 
+// Initialize: load permission mode and set up tab tracking
+chrome.storage.local.get(['permissionMode', 'currentActiveTab'], (result) => {
+  currentPermissionMode = result.permissionMode || 'plan';
+  currentActiveTab = result.currentActiveTab || null;
+  console.log('[TAB MGMT] Initialized, active tab:', currentActiveTab);
+});
+
+// Listen for tab activation (user switches tabs)
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  const { tabId } = activeInfo;
+
+  console.log('[TAB MGMT] Tab activated:', tabId);
+  currentActiveTab = tabId;
+  await chrome.storage.local.set({ currentActiveTab: tabId });
+
+  // Get tab details
+  try {
+    const tab = await chrome.tabs.get(tabId);
+
+    // Notify side panel about tab switch
+    chrome.runtime.sendMessage({
+      type: 'tab_switched',
+      tabId: tabId,
+      pageUrl: tab.url,
+      connection: tabConnections[tabId] || null
+    }, () => {
+      if (chrome.runtime.lastError) {
+        // Side panel not open
+      }
+    });
+  } catch (err) {
+    console.error('[TAB MGMT] Error getting tab info:', err);
+  }
+});
+
+// Listen for tab URL changes
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url) {
+    console.log(`[TAB ${tabId}] URL changed to:`, changeInfo.url);
+
+    // Update stored URL
+    if (tabConnections[tabId]) {
+      tabConnections[tabId].pageUrl = changeInfo.url;
+    }
+
+    // Notify side panel if this is the active tab
+    if (tabId === currentActiveTab) {
+      chrome.runtime.sendMessage({
+        type: 'tab_url_changed',
+        tabId: tabId,
+        pageUrl: changeInfo.url
+      }, () => {
+        if (chrome.runtime.lastError) {
+          // Side panel not open
+        }
+      });
+    }
+  }
+});
+
+// Listen for tab closure
+chrome.tabs.onRemoved.addListener((tabId) => {
+  console.log(`[TAB ${tabId}] Tab closed, cleaning up connection`);
+  disconnectTab(tabId);
+
+  if (tabId === currentActiveTab) {
+    currentActiveTab = null;
+    chrome.storage.local.set({ currentActiveTab: null });
+  }
+});
+
 // Handle messages from content script and side panel
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'element_selected') {
+  if (message.type === 'connect_tab') {
+    // Side panel requesting connection for a specific tab
+    const { tabId, pageUrl } = message;
+
+    connectTab(tabId, pageUrl).then(connection => {
+      sendResponse({
+        success: true,
+        sessionId: connection.sessionId,
+        status: connection.status
+      });
+    }).catch(err => {
+      console.error(`[TAB ${tabId}] Connection error:`, err);
+      sendResponse({ success: false, error: err.message });
+    });
+
+    return true; // Keep channel open for async response
+  }
+
+  else if (message.type === 'disconnect_tab') {
+    // Side panel disconnecting from a tab
+    const { tabId } = message;
+    disconnectTab(tabId);
+    sendResponse({ success: true });
+    return true;
+  }
+
+  else if (message.type === 'update_sdk_session_id') {
+    // Update SDK session ID for a tab
+    const { tabId, sdkSessionId } = message;
+    const connection = tabConnections[tabId];
+
+    if (connection) {
+      connection.sdkSessionId = sdkSessionId;
+      console.log(`[TAB ${tabId}] SDK session ID updated:`, sdkSessionId);
+      sendResponse({ success: true });
+    } else {
+      console.warn(`[TAB ${tabId}] No connection found to update SDK session ID`);
+      sendResponse({ success: false, error: 'No connection found' });
+    }
+    return true;
+  }
+
+  else if (message.type === 'element_selected') {
     // Forward to side panel (ignore if not open)
     try {
       chrome.runtime.sendMessage({
@@ -143,76 +331,121 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } catch (err) {
       // Ignore errors
     }
-  } else if (message.type === 'send_chat') {
-    // Send chat message to server
-    if (ws?.readyState === WebSocket.OPEN) {
+  }
+
+  else if (message.type === 'send_chat') {
+    // Send chat message to server for the active tab
+    const tabId = currentActiveTab;
+    const connection = tabConnections[tabId];
+
+    if (connection?.ws?.readyState === WebSocket.OPEN) {
       const chatMsg = {
         type: 'chat',
         context: message.context,
         message: message.message
       };
-      console.log('[WS OUT] chat', chatMsg);
-      ws.send(JSON.stringify(chatMsg));
+      console.log(`[TAB ${tabId}] [WS OUT] chat`, chatMsg);
+      connection.ws.send(JSON.stringify(chatMsg));
     } else {
-      console.error('WebSocket not connected');
+      console.error(`[TAB ${tabId}] WebSocket not connected`);
     }
-  } else if (message.type === 'cancel_request') {
-    // Cancel current stream
-    if (ws?.readyState === WebSocket.OPEN) {
+  }
+
+  else if (message.type === 'cancel_request') {
+    // Cancel current stream for the active tab
+    const tabId = currentActiveTab;
+    const connection = tabConnections[tabId];
+
+    if (connection?.ws?.readyState === WebSocket.OPEN) {
       const cancelMsg = {
         type: 'cancel_request',
         stream_id: message.stream_id
       };
-      console.log('[WS OUT] cancel_request', cancelMsg);
-      ws.send(JSON.stringify(cancelMsg));
+      console.log(`[TAB ${tabId}] [WS OUT] cancel_request`, cancelMsg);
+      connection.ws.send(JSON.stringify(cancelMsg));
     } else {
-      console.error('WebSocket not connected');
+      console.error(`[TAB ${tabId}] WebSocket not connected`);
     }
-  } else if (message.type === 'permission_mode_changed') {
-    // Update current mode and notify server
+  }
+
+  else if (message.type === 'permission_mode_changed') {
+    // Update current mode and notify all active connections
     currentPermissionMode = message.mode;
 
-    if (ws?.readyState === WebSocket.OPEN) {
-      const modeMsg = {
-        type: 'update_permission_mode',
-        mode: message.mode
-      };
-      console.log('[WS OUT] update_permission_mode', modeMsg);
-      ws.send(JSON.stringify(modeMsg));
-    }
+    Object.entries(tabConnections).forEach(([tabId, connection]) => {
+      if (connection.ws?.readyState === WebSocket.OPEN) {
+        const modeMsg = {
+          type: 'update_permission_mode',
+          mode: message.mode
+        };
+        console.log(`[TAB ${tabId}] [WS OUT] update_permission_mode`, modeMsg);
+        connection.ws.send(JSON.stringify(modeMsg));
+      }
+    });
 
     sendResponse({ success: true });
     return true;
-  } else if (message.type === 'retry_with_permission') {
+  }
+
+  else if (message.type === 'retry_with_permission') {
     // User clicked "Allow and Retry" button
-    if (ws?.readyState === WebSocket.OPEN) {
+    const tabId = currentActiveTab;
+    const connection = tabConnections[tabId];
+
+    if (connection?.ws?.readyState === WebSocket.OPEN) {
       const retryMsg = {
         type: 'retry_with_permission'
       };
-      console.log('[WS OUT] retry_with_permission', retryMsg);
-      ws.send(JSON.stringify(retryMsg));
+      console.log(`[TAB ${tabId}] [WS OUT] retry_with_permission`, retryMsg);
+      connection.ws.send(JSON.stringify(retryMsg));
     } else {
-      console.error('WebSocket not connected');
+      console.error(`[TAB ${tabId}] WebSocket not connected`);
     }
     sendResponse({ success: true });
     return true;
-  } else if (message.type === 'cancel_permission_request') {
+  }
+
+  else if (message.type === 'cancel_permission_request') {
     // User clicked "Cancel" button
-    if (ws?.readyState === WebSocket.OPEN) {
+    const tabId = currentActiveTab;
+    const connection = tabConnections[tabId];
+
+    if (connection?.ws?.readyState === WebSocket.OPEN) {
       const cancelMsg = {
         type: 'cancel_permission_request'
       };
-      console.log('[WS OUT] cancel_permission_request', cancelMsg);
-      ws.send(JSON.stringify(cancelMsg));
+      console.log(`[TAB ${tabId}] [WS OUT] cancel_permission_request`, cancelMsg);
+      connection.ws.send(JSON.stringify(cancelMsg));
     }
     sendResponse({ success: true });
     return true;
-  } else if (message.type === 'get_connection_status') {
+  }
+
+  else if (message.type === 'get_connection_status') {
+    const tabId = currentActiveTab;
+    const connection = tabConnections[tabId];
+
     sendResponse({
-      connected: ws?.readyState === WebSocket.OPEN
+      connected: connection?.ws?.readyState === WebSocket.OPEN,
+      tabId: tabId,
+      sessionId: connection?.sessionId || null
     });
-    return true; // Keep channel open for async response
-  } else if (message.action === 'openFile') {
+    return true;
+  }
+
+  else if (message.type === 'get_tab_connection') {
+    // Get full connection info for a specific tab (or current tab if not specified)
+    const tabId = message.tabId || currentActiveTab;
+    const connection = tabConnections[tabId];
+
+    sendResponse({
+      tabId: tabId,
+      connection: connection || null
+    });
+    return true;
+  }
+
+  else if (message.action === 'openFile') {
     // Open file in editor with dynamic protocol support
     chrome.storage.local.get(['preferredEditor', 'projectPath'], (result) => {
       const editor = result.preferredEditor || 'vscode';
@@ -254,7 +487,4 @@ chrome.action.onClicked.addListener((tab) => {
   chrome.sidePanel.open({ windowId: tab.windowId });
 });
 
-// Initialize connection on startup
-connect();
-
-console.log('UI Chatter background worker started');
+console.log('UI Chatter background worker started (per-tab WebSocket mode)');
