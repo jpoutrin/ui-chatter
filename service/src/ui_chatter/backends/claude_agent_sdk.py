@@ -57,10 +57,12 @@ LOG_TRUNCATE_LENGTH = 100  # Truncate log messages to this length
 # SDK Message Type Constants (avoid magic strings)
 SDK_MSG_RESULT = "ResultMessage"
 SDK_MSG_ASSISTANT = "AssistantMessage"
-SDK_MSG_TOOL_RESULT = "ToolResultMessage"
+SDK_MSG_USER = "UserMessage"
 SDK_MSG_SYSTEM = "SystemMessage"
 SDK_BLOCK_TEXT = "TextBlock"
 SDK_BLOCK_TOOL_USE = "ToolUseBlock"
+SDK_BLOCK_TOOL_RESULT = "ToolResultBlock"
+SDK_BLOCK_THINKING = "ThinkingBlock"
 
 
 # ============================================================================
@@ -130,6 +132,16 @@ def is_text_block(block: ContentBlock) -> TypeGuard[TextBlock]:
 def is_tool_use_block(block: ContentBlock) -> TypeGuard[ToolUseBlock]:
     """Type guard for ToolUseBlock."""
     return isinstance(block, ToolUseBlock)
+
+
+def is_tool_result_block(block: ContentBlock) -> TypeGuard[ToolResultBlock]:
+    """Type guard for ToolResultBlock."""
+    return isinstance(block, ToolResultBlock)
+
+
+def is_thinking_block(block: ContentBlock) -> TypeGuard[ThinkingBlock]:
+    """Type guard for ThinkingBlock."""
+    return isinstance(block, ThinkingBlock)
 
 
 def is_result_message(msg: Message) -> TypeGuard[ResultMessage]:
@@ -204,6 +216,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
         ]
         self.ws_send_callback: Callable[[WebSocketMessage], Awaitable[None]] | None = ws_send_callback
         self.permission_manager: PermissionRequestManager = PermissionRequestManager()
+        self.message_stats: dict[str, int] = {}  # Track message type statistics
 
         # If resuming an existing session, set it
         if resume_session_id:
@@ -482,7 +495,32 @@ class ClaudeAgentSDKBackend(AgentBackend):
                     ).model_dump()
 
                 elif msg_type == SDK_MSG_ASSISTANT:
-                    # Process content blocks (text and tool use)
+                    # Check for message-level errors first (authentication, rate limits, etc.)
+                    if is_assistant_message(msg) and msg.error:
+                        error_type = msg.error
+                        logger.error(f"[AGENT SDK] Assistant message error: {error_type}")
+
+                        # Map SDK error types to our error codes
+                        error_code_map: dict[str, ErrorCode] = {
+                            "authentication_failed": "auth_failed",
+                            "billing_error": "auth_failed",
+                            "rate_limit": "rate_limit",
+                            "invalid_request": "internal",
+                            "server_error": "internal",
+                            "unknown": "internal",
+                        }
+
+                        error_code = error_code_map.get(error_type, "internal")
+                        error_message = self._get_error_message_for_assistant_error(error_type)
+
+                        yield {
+                            "type": "error",
+                            "code": error_code,
+                            "message": error_message
+                        }
+                        return  # Stop processing this message
+
+                    # Process content blocks (text, tool use, and thinking)
                     content = getattr(msg, 'content', None)
                     if not content:
                         continue
@@ -508,6 +546,22 @@ class ClaudeAgentSDKBackend(AgentBackend):
                                 "done": False
                             }
 
+                        elif block_type == SDK_BLOCK_THINKING:
+                            # Extract thinking content
+                            if is_thinking_block(block):
+                                thinking_text = block.thinking
+                                signature = block.signature if hasattr(block, 'signature') else None
+
+                                logger.debug(f"[AGENT SDK] Claude is thinking ({len(thinking_text)} chars)")
+
+                                # Send thinking indicator to UI
+                                yield {
+                                    "type": "thinking",
+                                    "content": thinking_text,
+                                    "signature": signature,
+                                    "done": False
+                                }
+
                         elif block_type == SDK_BLOCK_TOOL_USE:
                             # Track tool execution
                             tool_id = getattr(block, 'id', None)
@@ -525,28 +579,53 @@ class ClaudeAgentSDKBackend(AgentBackend):
                             tool_count += 1
                             logger.info(f"[AGENT SDK] Tool execution started: {tool_name} (id: {tool_id})")
 
-                            yield ToolActivity(
+                            tool_activity_msg = ToolActivity(
                                 tool_id=tool_id,
                                 tool_name=tool_name,
                                 status=ToolActivityStatus.EXECUTING,
                                 input_summary=self._summarize_tool_input(tool_name, tool_input),
-                            ).model_dump()
+                                input=tool_input,  # Full input for expansion in UI
+                            ).model_dump(mode='json')
+                            logger.debug(f"[AGENT SDK] Yielding tool_activity: {tool_activity_msg}")
+                            yield tool_activity_msg
 
-                elif msg_type == SDK_MSG_TOOL_RESULT:
-                    # Track tool completion
-                    tool_id_value = getattr(msg, "tool_use_id", "unknown")
-                    tool_id = str(tool_id_value)  # Ensure it's a string for type safety
-                    is_error = bool(getattr(msg, "is_error", False))
+                elif msg_type == SDK_MSG_USER:
+                    # UserMessage may contain ToolResultBlock content blocks
+                    content = getattr(msg, 'content', None)
+                    if not content:
+                        continue
 
-                    logger.info(f"[AGENT SDK] Tool execution completed: {tool_id} (error: {is_error})")
+                    for block in content:
+                        if is_tool_result_block(block):
+                            # Track tool completion
+                            tool_id = str(block.tool_use_id)
+                            is_error = bool(block.is_error)
 
-                    content = getattr(msg, "content", None)
-                    yield ToolActivity(
-                        tool_id=tool_id,
-                        tool_name="",  # SDK doesn't provide tool name in result
-                        status=ToolActivityStatus.FAILED if is_error else ToolActivityStatus.COMPLETED,
-                        output_summary=self._summarize_tool_output(content) if content else None,
-                    ).model_dump()
+                            logger.info(f"[AGENT SDK] Tool execution completed: {tool_id} (error: {is_error})")
+
+                            # Create simple summary for tool results
+                            # ToolResultBlock.content can be str or complex data structure
+                            output_summary: str | None = None
+                            if block.content:
+                                if isinstance(block.content, str):
+                                    # Truncate long strings
+                                    if len(block.content) > 100:
+                                        output_summary = block.content[:100] + "..."
+                                    else:
+                                        output_summary = block.content
+                                else:
+                                    # For non-string content, just indicate presence
+                                    output_summary = f"Tool result (complex data)"
+
+                            tool_activity_msg = ToolActivity(
+                                tool_id=tool_id,
+                                tool_name="",  # SDK doesn't provide tool name in result
+                                status=ToolActivityStatus.FAILED if is_error else ToolActivityStatus.COMPLETED,
+                                output_summary=output_summary,
+                                output=block.content,  # Full output for expansion in UI
+                            ).model_dump(mode='json')
+                            logger.debug(f"[AGENT SDK] Yielding tool_activity completion: {tool_id}")
+                            yield tool_activity_msg
 
                 elif msg_type == SDK_MSG_SYSTEM:
                     # Capture session ID and slash_commands from init message (first message)
@@ -586,6 +665,28 @@ class ClaudeAgentSDKBackend(AgentBackend):
                         else:
                             logger.debug("[AGENT SDK] Init message has empty slash_commands list")
                     # SystemMessage doesn't yield anything to the client (except session_established above)
+
+                else:
+                    # Unknown message type - log it
+                    msg_type_name = type(msg).__name__
+                    logger.warning(
+                        f"[AGENT SDK] Unhandled message type: {msg_type_name}"
+                    )
+
+                    if is_debug():
+                        logger.debug(f"[AGENT SDK] Message attributes: {dir(msg)}")
+                        if hasattr(msg, '__dict__'):
+                            logger.debug(f"[AGENT SDK] Message data: {vars(msg)}")
+                        else:
+                            logger.debug("[AGENT SDK] Message has no __dict__")
+
+                # Track message type statistics
+                msg_type_name = type(msg).__name__
+                self.message_stats[msg_type_name] = self.message_stats.get(msg_type_name, 0) + 1
+
+            # Log message statistics at end of stream
+            if is_debug() and self.message_stats:
+                logger.debug(f"[AGENT SDK] Message type stats: {self.message_stats}")
 
         except asyncio.CancelledError:
             logger.info(f"[AGENT SDK] Stream {stream_id} cancelled via asyncio")
@@ -710,6 +811,18 @@ class ClaudeAgentSDKBackend(AgentBackend):
             "execution_failed": "Claude encountered an error while processing your request."
         }
         return messages.get(code, str(error))
+
+    def _get_error_message_for_assistant_error(self, error_type: str) -> str:
+        """Get user-friendly error message for AssistantMessage errors."""
+        messages: dict[str, str] = {
+            "authentication_failed": "Authentication failed. Please check your Claude credentials.",
+            "billing_error": "Billing error. Please check your Claude subscription status.",
+            "rate_limit": "Rate limit exceeded. Please try again in a few moments.",
+            "invalid_request": "Invalid request. Please try rephrasing your message.",
+            "server_error": "Claude server error. Please try again later.",
+            "unknown": "An unknown error occurred. Please try again.",
+        }
+        return messages.get(error_type, f"Error: {error_type}")
 
     def get_slash_commands(self) -> list[str]:
         """
