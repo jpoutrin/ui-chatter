@@ -36,19 +36,24 @@ class ClaudeAgentSDKBackend(AgentBackend):
         self,
         project_path: str,
         permission_mode: str = "bypassPermissions",
+        resume_session_id: Optional[str] = None,  # For explicit resume
         **kwargs
     ):
         super().__init__(project_path)
         self.permission_mode = permission_mode
+        self.slash_commands = []  # Captured from SDK init message
         self.allowed_tools = [
             "Read", "Write", "Edit", "Bash", "Glob", "Grep"
         ]
+
+        # If resuming an existing session, set it
+        if resume_session_id:
+            self.set_sdk_session_id(resume_session_id)
 
     async def handle_chat(
         self,
         context: CapturedContext,
         message: str,
-        is_first_message: bool = False,
         screenshot_path: Optional[str] = None,
         cancel_event: Optional[asyncio.Event] = None,
     ) -> AsyncGenerator[dict, None]:
@@ -58,7 +63,6 @@ class ClaudeAgentSDKBackend(AgentBackend):
         Args:
             context: Captured UI context
             message: User's message
-            is_first_message: Ignored for Agent SDK (stateless)
             screenshot_path: Optional path to screenshot file
             cancel_event: Optional event to signal cancellation
 
@@ -68,6 +72,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
         stream_id = str(uuid.uuid4())
         start_time = time.time()
         tool_count = 0
+        response_completed = False  # Track if we've sent the final response
 
         logger.info(f"[AGENT SDK] handle_chat called with message: {message[:100]}, stream_id: {stream_id}")
         try:
@@ -92,15 +97,26 @@ class ClaudeAgentSDKBackend(AgentBackend):
                 logger.debug("=" * 80)
 
             # Stream from SDK (NO api_key needed - auto-detects from ~/.claude/config)
-            logger.info("[AGENT SDK] Calling query()...")
-            async for msg in query(
-                prompt=prompt,
-                options=ClaudeAgentOptions(
+            # Check if we have an established session to resume
+            if self.has_established_session:
+                logger.info(f"[AGENT SDK] Resuming session: {self.sdk_session_id}")
+                options = ClaudeAgentOptions(
+                    resume=self.sdk_session_id,
                     allowed_tools=self.allowed_tools,
                     permission_mode=self.permission_mode,
                     cwd=self.project_path,
+                    stderr=lambda msg: logger.error(f"[SDK STDERR] {msg}"),
                 )
-            ):
+            else:
+                logger.info(f"[AGENT SDK] Creating new session (no resume)")
+                options = ClaudeAgentOptions(
+                    allowed_tools=self.allowed_tools,
+                    permission_mode=self.permission_mode,
+                    cwd=self.project_path,
+                    stderr=lambda msg: logger.error(f"[SDK STDERR] {msg}"),
+                )
+
+            async for msg in query(prompt=prompt, options=options):
                 # Check for cancellation
                 if cancel_event and cancel_event.is_set():
                     logger.info(f"[AGENT SDK] Stream {stream_id} cancelled by user")
@@ -129,6 +145,27 @@ class ClaudeAgentSDKBackend(AgentBackend):
 
                     if is_debug():
                         logger.debug(f"CLAUDE AGENT SDK: Received final message (done=True), duration: {duration_ms}ms")
+                        logger.debug(f"CLAUDE AGENT SDK: ResultMessage.result = {getattr(msg, 'result', 'N/A')}")
+                        logger.debug(f"CLAUDE AGENT SDK: ResultMessage.is_error = {getattr(msg, 'is_error', False)}")
+                        logger.debug(f"CLAUDE AGENT SDK: ResultMessage.subtype = {getattr(msg, 'subtype', 'N/A')}")
+
+                    # Check if execution failed
+                    if getattr(msg, 'is_error', False):
+                        error_subtype = getattr(msg, 'subtype', 'unknown_error')
+                        logger.error(f"[AGENT SDK] Execution failed with subtype: {error_subtype}")
+
+                        # Send error to client
+                        yield {
+                            "type": "error",
+                            "code": "execution_failed",
+                            "message": f"Claude encountered an error while processing your request. This may be due to working directory permissions or tool execution issues."
+                        }
+                        return  # Don't mark as successfully completed
+
+                    response_completed = True  # Mark response as successfully completed
+
+                    # NOTE: Don't send result_text here - it was already sent via AssistantMessage chunks
+                    # Sending it again would cause message duplication in the UI
 
                     yield {"type": "response_chunk", "content": "", "done": True}
 
@@ -189,6 +226,39 @@ class ClaudeAgentSDKBackend(AgentBackend):
                         output_summary=self._summarize_tool_output(msg.content) if hasattr(msg, "content") else None,
                     ).model_dump()
 
+                elif msg_type == "SystemMessage":
+                    # Capture session ID and slash_commands from init message (first message)
+                    if hasattr(msg, 'subtype') and msg.subtype == 'init':
+                        if hasattr(msg, 'data') and isinstance(msg.data, dict):
+                            sdk_session_id = msg.data.get('session_id')
+                            if sdk_session_id:
+                                # Only set if we don't already have a session
+                                if not self.has_established_session:
+                                    logger.info(f"[AGENT SDK] Session established: {sdk_session_id}")
+                                    self.set_sdk_session_id(sdk_session_id)
+
+                                    # Notify session manager to persist this ID
+                                    yield {
+                                        "type": "session_established",
+                                        "sdk_session_id": sdk_session_id
+                                    }
+                                else:
+                                    # Verify it matches our existing session
+                                    if sdk_session_id != self.sdk_session_id:
+                                        logger.warning(
+                                            f"[AGENT SDK] SDK returned different session ID! "
+                                            f"Expected: {self.sdk_session_id}, Got: {sdk_session_id}"
+                                        )
+
+                            # Capture slash_commands from init message
+                            slash_commands = msg.data.get('slash_commands', [])
+                            if slash_commands:
+                                logger.info(f"[AGENT SDK] Captured {len(slash_commands)} slash commands from SDK")
+                                self.slash_commands = slash_commands
+                            else:
+                                logger.debug("[AGENT SDK] No slash_commands in init message, will use filesystem discovery")
+                    # SystemMessage doesn't yield anything to the client (except session_established above)
+
         except asyncio.CancelledError:
             logger.info(f"[AGENT SDK] Stream {stream_id} cancelled via asyncio")
             yield StreamControl(
@@ -198,6 +268,15 @@ class ClaudeAgentSDKBackend(AgentBackend):
             ).model_dump()
 
         except Exception as e:
+            # If response was already sent successfully, this is likely a cleanup error
+            if response_completed:
+                logger.warning(f"[AGENT SDK] Post-response cleanup error (non-critical): {e}")
+                logger.warning(f"[AGENT SDK] This error occurred after the response was successfully sent")
+                logger.debug(f"[AGENT SDK] Cleanup error details: {str(e)}", exc_info=True)
+                # Don't send error to client - response was successful
+                return
+
+            # Response was not completed - this is a real error
             logger.error(f"[AGENT SDK] Chat error: {e}", exc_info=True)
             logger.error(f"[AGENT SDK] Error type: {type(e).__name__}")
             logger.error(f"[AGENT SDK] Error details: {str(e)}")
@@ -301,6 +380,18 @@ class ClaudeAgentSDKBackend(AgentBackend):
             "internal": f"An unexpected error occurred: {str(error)}"
         }
         return messages.get(code, str(error))
+
+    def get_slash_commands(self) -> list[str]:
+        """
+        Return slash commands captured from SDK init message.
+
+        This is backend-specific - not part of AgentBackend ABC.
+        CommandDiscovery uses duck typing to check availability.
+
+        Returns:
+            List of slash command names (e.g., ['/compact', '/clear', '/commit'])
+        """
+        return self.slash_commands
 
     async def shutdown(self) -> None:
         """Cleanup resources."""
