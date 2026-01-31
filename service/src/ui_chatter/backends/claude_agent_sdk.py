@@ -25,6 +25,19 @@ logger = logging.getLogger(__name__)
 _SLASH_COMMANDS_CACHE: List[str] = []
 _SLASH_COMMANDS_INITIALIZED = False
 
+# Constants for robustness and clarity
+MAX_MESSAGE_LENGTH = 100_000  # 100KB max message length
+SDK_QUERY_TIMEOUT = 300  # 5 minutes timeout for SDK query
+LOG_TRUNCATE_LENGTH = 100  # Truncate log messages to this length
+
+# SDK Message Type Constants (avoid magic strings)
+SDK_MSG_RESULT = "ResultMessage"
+SDK_MSG_ASSISTANT = "AssistantMessage"
+SDK_MSG_TOOL_RESULT = "ToolResultMessage"
+SDK_MSG_SYSTEM = "SystemMessage"
+SDK_BLOCK_TEXT = "TextBlock"
+SDK_BLOCK_TOOL_USE = "ToolUseBlock"
+
 
 def is_debug() -> bool:
     """Check if debug logging is enabled."""
@@ -191,6 +204,51 @@ class ClaudeAgentSDKBackend(AgentBackend):
             "parent_tool_use_id": None,
         }
 
+    def _validate_message_length(self, message: str) -> None:
+        """
+        Validate message length to prevent resource exhaustion.
+
+        Args:
+            message: User's message
+
+        Raises:
+            ValueError: If message exceeds MAX_MESSAGE_LENGTH
+        """
+        if len(message) > MAX_MESSAGE_LENGTH:
+            raise ValueError(
+                f"Message too long ({len(message)} chars). "
+                f"Maximum allowed: {MAX_MESSAGE_LENGTH} chars"
+            )
+
+    def _create_agent_options(self) -> ClaudeAgentOptions:
+        """
+        Create ClaudeAgentOptions for SDK query (consolidates duplicate logic).
+
+        Returns:
+            Configured ClaudeAgentOptions instance
+        """
+        if self.has_established_session:
+            logger.info(f"[AGENT SDK] Resuming session: {self.sdk_session_id}")
+            return ClaudeAgentOptions(
+                resume=self.sdk_session_id,
+                allowed_tools=self.allowed_tools,
+                permission_mode=self.permission_mode,
+                cwd=self.project_path,
+                setting_sources=['user', 'project'],
+                stderr=lambda msg: logger.error(f"[SDK STDERR] {msg}"),
+                can_use_tool=self._can_use_tool_callback,
+            )
+        else:
+            logger.info("[AGENT SDK] Creating new session (no resume)")
+            return ClaudeAgentOptions(
+                allowed_tools=self.allowed_tools,
+                permission_mode=self.permission_mode,
+                cwd=self.project_path,
+                setting_sources=['user', 'project'],
+                stderr=lambda msg: logger.error(f"[SDK STDERR] {msg}"),
+                can_use_tool=self._can_use_tool_callback,
+            )
+
     async def handle_chat(
         self,
         context: Optional[CapturedContext],
@@ -215,13 +273,17 @@ class ClaudeAgentSDKBackend(AgentBackend):
         tool_count = 0
         response_completed = False  # Track if we've sent the final response
 
-        logger.info(f"[AGENT SDK] handle_chat called with message: {message[:100]}, stream_id: {stream_id}")
+        logger.info(f"[AGENT SDK] handle_chat called with message: {message[:LOG_TRUNCATE_LENGTH]}, stream_id: {stream_id}")
         try:
+            # Validate message length
+            self._validate_message_length(message)
+
             # Signal stream start
             yield StreamControl(
                 action=StreamControlAction.STARTED,
                 stream_id=stream_id
             ).model_dump()
+
             # Build prompt with context
             prompt_text = self._build_prompt(context, message, screenshot_path)
 
@@ -237,33 +299,14 @@ class ClaudeAgentSDKBackend(AgentBackend):
                 logger.debug(prompt_text)
                 logger.debug("=" * 80)
 
-            # Stream from SDK (NO api_key needed - auto-detects from ~/.claude/config)
-            # Check if we have an established session to resume
-            if self.has_established_session:
-                logger.info(f"[AGENT SDK] Resuming session: {self.sdk_session_id}")
-                options = ClaudeAgentOptions(
-                    resume=self.sdk_session_id,
-                    allowed_tools=self.allowed_tools,
-                    permission_mode=self.permission_mode,
-                    cwd=self.project_path,
-                    setting_sources=['user', 'project'],  # Load plugins
-                    stderr=lambda msg: logger.error(f"[SDK STDERR] {msg}"),
-                    can_use_tool=self._can_use_tool_callback,  # NEW: Permission callback
-                )
-            else:
-                logger.info(f"[AGENT SDK] Creating new session (no resume)")
-                options = ClaudeAgentOptions(
-                    allowed_tools=self.allowed_tools,
-                    permission_mode=self.permission_mode,
-                    cwd=self.project_path,
-                    setting_sources=['user', 'project'],  # Load plugins
-                    stderr=lambda msg: logger.error(f"[SDK STDERR] {msg}"),
-                    can_use_tool=self._can_use_tool_callback,  # NEW: Permission callback
-                )
+            # Create agent options (consolidated helper method)
+            options = self._create_agent_options()
 
             # Convert to streaming mode (required when using can_use_tool callback)
             prompt_stream = self._create_prompt_stream(prompt_text)
 
+            # Stream from SDK (NO api_key needed - auto-detects from ~/.claude/config)
+            # TODO: Add timeout protection - requires async context manager or timeout task
             async for msg in query(prompt=prompt_stream, options=options):
                 # Check for cancellation
                 if cancel_event and cancel_event.is_set():
@@ -275,19 +318,20 @@ class ClaudeAgentSDKBackend(AgentBackend):
                     ).model_dump()
                     return
 
-                logger.info(f"[AGENT SDK] Received message from SDK: {type(msg)}")
+                # Debug: Log received message (use DEBUG not INFO to reduce log volume)
+                logger.debug(f"[AGENT SDK] Received message from SDK: {type(msg).__name__}")
 
-                # Debug: inspect message class name
+                # Debug: inspect message details
                 if is_debug():
-                    logger.debug(f"[AGENT SDK] Message class: {type(msg).__name__}")
                     logger.debug(f"[AGENT SDK] Message attributes: {dir(msg)}")
-                    if hasattr(msg, "content"):
-                        logger.debug(f"[AGENT SDK] Message content: {msg.content}")
+                    content = getattr(msg, "content", None)
+                    if content:
+                        logger.debug(f"[AGENT SDK] Message content: {content}")
 
-                # Handle different message types by class name
+                # Handle different message types by class name (using constants)
                 msg_type = type(msg).__name__
 
-                if msg_type == "ResultMessage":
+                if msg_type == SDK_MSG_RESULT:
                     # Final message with result
                     duration_ms = int((time.time() - start_time) * 1000)
 
@@ -327,65 +371,81 @@ class ClaudeAgentSDKBackend(AgentBackend):
                         }
                     ).model_dump()
 
-                elif msg_type == "AssistantMessage":
+                elif msg_type == SDK_MSG_ASSISTANT:
                     # Process content blocks (text and tool use)
-                    if not hasattr(msg, 'content'):
+                    content = getattr(msg, 'content', None)
+                    if not content:
                         continue
-                    for block in msg.content:
+                    for block in content:
                         block_type = block.__class__.__name__
 
-                        if block_type == "TextBlock":
+                        if block_type == SDK_BLOCK_TEXT:
                             # Yield text content
-                            if not hasattr(block, 'text'):
+                            text = getattr(block, 'text', None)
+                            if not text:
                                 continue
-                            logger.debug(f"[AGENT SDK] Yielding text chunk: {len(block.text)} chars")
+                            logger.debug(f"[AGENT SDK] Yielding text chunk: {len(text)} chars")
 
-                            if is_debug() and block.text:
-                                logger.debug(f"CLAUDE AGENT SDK OUTPUT CHUNK: {block.text[:100]}{'...' if len(block.text) > 100 else ''}")
+                            if is_debug():
+                                truncated = text[:LOG_TRUNCATE_LENGTH]
+                                if len(text) > LOG_TRUNCATE_LENGTH:
+                                    truncated += "..."
+                                logger.debug(f"CLAUDE AGENT SDK OUTPUT CHUNK: {truncated}")
 
                             yield {
                                 "type": "response_chunk",
-                                "content": block.text,
+                                "content": text,
                                 "done": False
                             }
 
-                        elif block_type == "ToolUseBlock":
-                            # NEW: Track tool execution instead of discarding
-                            if not hasattr(block, 'id') or not hasattr(block, 'name') or not hasattr(block, 'input'):
-                                continue
-                            tool_count += 1
-                            tool_id = block.id
-                            tool_name = block.name
+                        elif block_type == SDK_BLOCK_TOOL_USE:
+                            # Track tool execution
+                            tool_id = getattr(block, 'id', None)
+                            tool_name = getattr(block, 'name', None)
+                            tool_input = getattr(block, 'input', None)
 
+                            if not all([tool_id, tool_name, tool_input]):
+                                logger.warning(f"[AGENT SDK] ToolUseBlock missing required attributes")
+                                continue
+
+                            # Type assertions after validation
+                            assert isinstance(tool_id, str) and isinstance(tool_name, str)
+                            assert isinstance(tool_input, dict)
+
+                            tool_count += 1
                             logger.info(f"[AGENT SDK] Tool execution started: {tool_name} (id: {tool_id})")
 
                             yield ToolActivity(
                                 tool_id=tool_id,
                                 tool_name=tool_name,
                                 status=ToolActivityStatus.EXECUTING,
-                                input_summary=self._summarize_tool_input(tool_name, block.input),
+                                input_summary=self._summarize_tool_input(tool_name, tool_input),
                             ).model_dump()
 
-                elif msg_type == "ToolResultMessage":
+                elif msg_type == SDK_MSG_TOOL_RESULT:
                     # Track tool completion
-                    tool_id = msg.tool_use_id if hasattr(msg, "tool_use_id") else "unknown"
-                    is_error = msg.is_error if hasattr(msg, "is_error") else False
+                    tool_id_value = getattr(msg, "tool_use_id", "unknown")
+                    tool_id = str(tool_id_value)  # Ensure it's a string for type safety
+                    is_error = bool(getattr(msg, "is_error", False))
 
                     logger.info(f"[AGENT SDK] Tool execution completed: {tool_id} (error: {is_error})")
 
+                    content = getattr(msg, "content", None)
                     yield ToolActivity(
                         tool_id=tool_id,
                         tool_name="",  # SDK doesn't provide tool name in result
                         status=ToolActivityStatus.FAILED if is_error else ToolActivityStatus.COMPLETED,
-                        output_summary=self._summarize_tool_output(msg.content) if hasattr(msg, "content") else None,
+                        output_summary=self._summarize_tool_output(content) if content else None,
                     ).model_dump()
 
-                elif msg_type == "SystemMessage":
+                elif msg_type == SDK_MSG_SYSTEM:
                     # Capture session ID and slash_commands from init message (first message)
-                    if hasattr(msg, 'subtype') and msg.subtype == 'init':
+                    subtype = getattr(msg, 'subtype', None)
+                    if subtype == 'init':
                         # Capture session ID from message.data
-                        if hasattr(msg, 'data') and isinstance(msg.data, dict):
-                            sdk_session_id = msg.data.get('session_id')
+                        data = getattr(msg, 'data', None)
+                        if data and isinstance(data, dict):
+                            sdk_session_id = data.get('session_id')
                             if sdk_session_id:
                                 # Only set if we don't already have a session
                                 if not self.has_established_session:
@@ -405,17 +465,16 @@ class ClaudeAgentSDKBackend(AgentBackend):
                                             f"Expected: {self.sdk_session_id}, Got: {sdk_session_id}"
                                         )
 
-                        # Capture slash_commands directly from message attribute (not from data dict)
-                        if hasattr(msg, 'slash_commands'):
-                            slash_commands = msg.slash_commands
-                            if slash_commands and not self.slash_commands_initialized:
-                                logger.info(f"[AGENT SDK] Captured {len(slash_commands)} slash commands from SDK: {slash_commands[:5]}...")
-                                self.slash_commands = slash_commands
-                                self.slash_commands_initialized = True
-                            elif not slash_commands:
-                                logger.debug("[AGENT SDK] Init message has empty slash_commands list")
-                        else:
+                        # Capture slash_commands directly from message attribute
+                        slash_commands = getattr(msg, 'slash_commands', None)
+                        if slash_commands and not self.slash_commands_initialized:
+                            logger.info(f"[AGENT SDK] Captured {len(slash_commands)} slash commands from SDK: {slash_commands[:5]}...")
+                            self.slash_commands = slash_commands
+                            self.slash_commands_initialized = True
+                        elif slash_commands is None:
                             logger.warning("[AGENT SDK] Init message missing slash_commands attribute")
+                        else:
+                            logger.debug("[AGENT SDK] Init message has empty slash_commands list")
                     # SystemMessage doesn't yield anything to the client (except session_established above)
 
         except asyncio.CancelledError:

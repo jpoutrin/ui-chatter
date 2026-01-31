@@ -454,6 +454,7 @@ class SessionStore:
 
         Returns the most recently active session that matches the base_url
         and is within the time window, regardless of which tab it was from.
+        Includes both active and inactive sessions (disconnected but resumable).
         """
         await self.initialize()
 
@@ -465,7 +466,7 @@ class SessionStore:
                 """
                 SELECT * FROM sessions
                 WHERE base_url = ?
-                  AND status = 'active'
+                  AND status IN ('active', 'inactive')
                   AND last_activity > ?
                   AND sdk_session_id IS NOT NULL
                 ORDER BY last_activity DESC

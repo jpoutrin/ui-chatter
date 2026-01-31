@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import tempfile
 import shutil
+from unittest.mock import AsyncMock, patch
 
 from ui_chatter.session_manager import SessionManager
 from ui_chatter.session_store import SessionStore
@@ -28,7 +29,15 @@ async def session_store(temp_project):
 
 
 @pytest.fixture
-async def session_manager(temp_project, session_store):
+async def mock_slash_commands():
+    """Mock initialize_slash_commands to avoid SDK calls in tests."""
+    with patch('ui_chatter.backends.claude_agent_sdk.ClaudeAgentSDKBackend.initialize_slash_commands', new_callable=AsyncMock) as mock:
+        mock.return_value = None
+        yield mock
+
+
+@pytest.fixture
+async def session_manager(temp_project, session_store, mock_slash_commands):
     """Create session manager for testing."""
     manager = SessionManager(
         max_idle_minutes=30,
@@ -109,17 +118,17 @@ async def test_different_tab_no_active_session_resumes(session_manager, session_
     # Establish SDK session
     await session_manager.update_sdk_session_id("session1", "sdk-session-abc")
 
-    # Manually set last_activity to 25 minutes ago (within window)
+    # Manually set last_activity to 25 minutes ago and mark as inactive (simulating disconnected session)
     import aiosqlite
     async with aiosqlite.connect(session_store.db_path) as db:
         await db.execute(
-            "UPDATE sessions SET last_activity = ? WHERE session_id = ?",
-            ((datetime.now() - timedelta(minutes=25)).isoformat(), "session1")
+            "UPDATE sessions SET last_activity = ?, status = ? WHERE session_id = ?",
+            ((datetime.now() - timedelta(minutes=25)).isoformat(), "inactive", "session1")
         )
         await db.commit()
 
-    # Remove from in-memory sessions to simulate server restart
-    await session_manager.remove_session("session1")
+    # Remove from in-memory sessions to simulate disconnect
+    session_manager.sessions.pop("session1", None)
 
     # Open same URL in different tab (no other active tabs)
     session2 = await session_manager.create_session(
@@ -184,8 +193,8 @@ async def test_query_params_ignored(session_manager):
 
     await session_manager.update_sdk_session_id("session1", "sdk-session-abc")
 
-    # Remove from memory
-    await session_manager.remove_session("session1")
+    # Remove from memory (keep in DB for resume)
+    session_manager.sessions.pop("session1", None)
 
     # Resume with different query params
     session2 = await session_manager.create_session(
@@ -211,7 +220,8 @@ async def test_fragment_ignored(session_manager):
     )
 
     await session_manager.update_sdk_session_id("session1", "sdk-session-abc")
-    await session_manager.remove_session("session1")
+    # Remove from memory (keep in DB for resume)
+    session_manager.sessions.pop("session1", None)
 
     # Resume with different fragment
     session2 = await session_manager.create_session(

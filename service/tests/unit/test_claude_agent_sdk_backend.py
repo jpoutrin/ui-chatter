@@ -75,12 +75,16 @@ async def test_handle_chat_extracts_text_from_textblock(backend, mock_context):
         async for chunk in backend.handle_chat(mock_context, "test"):
             chunks.append(chunk)
 
-        # Verify we got content
-        assert len(chunks) == 2
-        assert chunks[0]["type"] == "response_chunk"
-        assert chunks[0]["content"] == "Hello from Claude!"
-        assert chunks[0]["done"] is False
-        assert chunks[1]["done"] is True
+        # Verify we got stream_control(STARTED), response_chunk, done chunk, stream_control(COMPLETED)
+        assert len(chunks) == 4
+        assert chunks[0]["type"] == "stream_control"
+        assert chunks[0]["action"] == "started"
+        assert chunks[1]["type"] == "response_chunk"
+        assert chunks[1]["content"] == "Hello from Claude!"
+        assert chunks[1]["done"] is False
+        assert chunks[2]["done"] is True
+        assert chunks[3]["type"] == "stream_control"
+        assert chunks[3]["action"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -106,9 +110,13 @@ async def test_handle_chat_handles_multiple_textblocks(backend, mock_context):
         async for chunk in backend.handle_chat(mock_context, "test"):
             chunks.append(chunk)
 
-        assert len(chunks) == 3
-        assert chunks[0]["content"] == "Part 1 "
-        assert chunks[1]["content"] == "Part 2"
+        # stream_control(STARTED), response_chunk(Part 1), response_chunk(Part 2), done chunk, stream_control(COMPLETED)
+        assert len(chunks) == 5
+        assert chunks[0]["type"] == "stream_control"
+        assert chunks[1]["content"] == "Part 1 "
+        assert chunks[2]["content"] == "Part 2"
+        assert chunks[3]["done"] is True
+        assert chunks[4]["type"] == "stream_control"
 
 
 @pytest.mark.asyncio
@@ -131,10 +139,13 @@ async def test_handle_chat_skips_tooluse_blocks(backend, mock_context):
         async for chunk in backend.handle_chat(mock_context, "test"):
             chunks.append(chunk)
 
-        # Only text from TextBlock should be extracted
-        assert len(chunks) == 2
-        assert chunks[0]["content"] == "Let me check... "
-        assert "Read" not in chunks[0]["content"]
+        # stream_control(STARTED), response_chunk(text), done chunk, stream_control(COMPLETED)
+        assert len(chunks) == 4
+        assert chunks[0]["type"] == "stream_control"
+        assert chunks[1]["content"] == "Let me check... "
+        assert "Read" not in chunks[1]["content"]
+        assert chunks[2]["done"] is True
+        assert chunks[3]["type"] == "stream_control"
 
 
 @pytest.mark.asyncio
@@ -149,10 +160,12 @@ async def test_handle_chat_auth_error(backend, mock_context):
         async for chunk in backend.handle_chat(mock_context, "test"):
             chunks.append(chunk)
 
-        assert len(chunks) == 1
-        assert chunks[0]["type"] == "error"
-        assert chunks[0]["code"] == "auth_failed"
-        assert "claude login" in chunks[0]["message"]
+        # stream_control(STARTED), error
+        assert len(chunks) == 2
+        assert chunks[0]["type"] == "stream_control"
+        assert chunks[1]["type"] == "error"
+        assert chunks[1]["code"] == "auth_failed"
+        assert "claude login" in chunks[1]["message"]
 
 
 @pytest.mark.asyncio
@@ -167,37 +180,11 @@ async def test_handle_chat_permission_error(backend, mock_context):
         async for chunk in backend.handle_chat(mock_context, "test"):
             chunks.append(chunk)
 
-        assert len(chunks) == 1
-        assert chunks[0]["type"] == "error"
-        assert chunks[0]["code"] == "permission_denied"
-
-
-def test_extract_text_content_single_block(backend):
-    """Test text extraction from single TextBlock."""
-    msg = MagicMock()
-    block = TextBlock("Test content")
-    msg.content = [block]
-
-    result = backend._extract_text_content(msg)
-    assert result == "Test content"
-
-
-def test_extract_text_content_multiple_blocks(backend):
-    """Test text extraction from multiple TextBlocks."""
-    msg = MagicMock()
-    block1 = TextBlock("Hello ")
-    block2 = TextBlock("World")
-    msg.content = [block1, block2]
-
-    result = backend._extract_text_content(msg)
-    assert result == "Hello World"
-
-
-def test_extract_text_content_no_content_attribute(backend):
-    """Test text extraction when message has no content."""
-    msg = MagicMock(spec=[])  # No content attribute
-    result = backend._extract_text_content(msg)
-    assert result == ""
+        # stream_control(STARTED), error
+        assert len(chunks) == 2
+        assert chunks[0]["type"] == "stream_control"
+        assert chunks[1]["type"] == "error"
+        assert chunks[1]["code"] == "permission_denied"
 
 
 def test_classify_error_types(backend):
