@@ -1,0 +1,52 @@
+{
+  "compilerOptions": {
+    // Target modern browsers (Chrome extension)
+    "target": "ES2022",
+    "module": "ES2022",
+    "lib": ["ES2022", "DOM"],
+
+    // Output configuration
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "sourceMap": true,
+
+    // Module resolution
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+
+    // Type checking - Gradual migration mode
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "strictFunctionTypes": false,
+    "strictBindCallApply": false,
+    "strictPropertyInitialization": false,
+    "noImplicitThis": false,
+    "alwaysStrict": true,
+
+    // Additional checks - Disabled for gradual migration
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noImplicitReturns": false,
+    "noFallthroughCasesInSwitch": false,
+    "noUncheckedIndexedAccess": false,
+
+    // Other options
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // Chrome extension types
+    "types": ["chrome"]
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "tests",
+    "libs"
+  ]
+}

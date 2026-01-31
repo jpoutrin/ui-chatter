@@ -10,6 +10,14 @@ help:  ## Show this help message
 install:  ## Install dependencies
 	npm install
 
+##@ Build
+
+build:  ## Build TypeScript to JavaScript
+	npm run build
+
+build-watch:  ## Build TypeScript in watch mode
+	npm run build:watch
+
 ##@ Testing
 
 test:  ## Run all tests
@@ -37,8 +45,8 @@ type-check:  ## Run TypeScript type checking
 
 ##@ Cleanup
 
-clean:  ## Remove node_modules and coverage
-	rm -rf node_modules coverage
+clean:  ## Remove node_modules, coverage, and dist
+	rm -rf node_modules coverage dist
 
 clean-cache:  ## Clear Jest cache
 	npx jest --clearCache
@@ -51,6 +59,7 @@ dev-setup: install  ## Complete development setup
 
 ci:  ## Run all CI checks
 	@echo "Running CI checks..."
+	@make build
 	@make lint
 	@make test-coverage
 	@echo "✓ All checks passed"
