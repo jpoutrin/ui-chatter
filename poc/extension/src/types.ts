@@ -294,6 +294,10 @@ export interface GetTabConnectionRuntimeMessage {
   tabId?: number;
 }
 
+export interface GetSessionIdRuntimeMessage {
+  type: 'get_session_id';
+}
+
 export interface OpenFileActionMessage {
   action: 'openFile';
   filePath: string;
@@ -321,6 +325,7 @@ export type RuntimeMessage =
   | CancelPermissionRequestRuntimeMessage
   | GetConnectionStatusRuntimeMessage
   | GetTabConnectionRuntimeMessage
+  | GetSessionIdRuntimeMessage
   | OpenFileActionMessage;
 
 // Background to Sidepanel message types

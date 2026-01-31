@@ -264,7 +264,8 @@ class SessionManager:
             session_id,
             session.project_path,
             permission_mode=session.permission_mode,
-            resume_session_id=new_sdk_session_id  # Resume existing SDK session
+            resume_session_id=new_sdk_session_id,  # Resume existing SDK session
+            ws_send_callback=session.ws_send_callback  # Preserve WebSocket callback
         )
 
         # Update session with new backend

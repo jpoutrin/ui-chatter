@@ -513,6 +513,16 @@ function handleGetTabConnection(message: GetTabConnectionRuntimeMessage, sendRes
   return true;
 }
 
+function handleGetSessionId(sendResponse: (response?: unknown) => void): boolean {
+  const tabId = currentActiveTab;
+  const connection = tabId !== null ? tabConnections[tabId] : null;
+  sendResponse({
+    sessionId: connection?.sessionId || null,
+    connected: connection?.ws?.readyState === WebSocket.OPEN
+  });
+  return true;
+}
+
 function handlePermissionResponse(message: PermissionResponseRuntimeMessage, _sendResponse: (response?: unknown) => void): boolean {
   const tabId = currentActiveTab;
   const connection = tabId !== null ? tabConnections[tabId] : null;
@@ -587,6 +597,8 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender: chrome.r
       return handleGetConnectionStatus(message, sendResponse);
     case 'get_tab_connection':
       return handleGetTabConnection(message, sendResponse);
+    case 'get_session_id':
+      return handleGetSessionId(sendResponse);
     case 'permission_response':
       return handlePermissionResponse(message, sendResponse);
     case 'user_answers':
