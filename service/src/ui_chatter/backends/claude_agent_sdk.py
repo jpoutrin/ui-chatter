@@ -136,7 +136,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
 
     async def handle_chat(
         self,
-        context: CapturedContext,
+        context: Optional[CapturedContext],
         message: str,
         screenshot_path: Optional[str] = None,
         cancel_event: Optional[asyncio.Event] = None,

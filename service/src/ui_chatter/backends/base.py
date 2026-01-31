@@ -100,7 +100,7 @@ class AgentBackend(ABC):
 
     def _build_prompt(
         self,
-        context: CapturedContext,
+        context: Optional[CapturedContext],
         message: str,
         screenshot_path: Optional[str],
     ) -> str:
@@ -109,12 +109,16 @@ class AgentBackend(ABC):
 
         Returns a prompt that includes:
         1. Display message (for chat history)
-        2. JSON context (for Claude to parse)
+        2. JSON context (for Claude to parse, if provided)
         3. Clear instructions
 
         The JSON structure allows extracting the user's original message
         when loading chat history, instead of showing the full technical context.
         """
+        # If no context provided, just return the message
+        if context is None:
+            return message
+
         element = context.element
 
         # Build context JSON

@@ -17,7 +17,7 @@ class ChatRequest(BaseModel):
     """Chat request from extension."""
 
     type: Literal["chat"] = "chat"
-    context: CapturedContext = Field(..., description="Captured UI context")
+    context: Optional[CapturedContext] = Field(None, description="Captured UI context (optional)")
     screenshot: Optional[str] = Field(None, description="Base64-encoded screenshot")
     message: str = Field(..., description="User's message")
 
