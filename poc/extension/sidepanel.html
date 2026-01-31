@@ -41,8 +41,74 @@
       padding: 12px 16px;
       border-bottom: 1px solid #e5e7eb;
       display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .header-row {
+      display: flex;
       justify-content: space-between;
       align-items: center;
+    }
+
+    .session-selector {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+    }
+
+    .session-selector label {
+      font-size: 12px;
+      color: #6b7280;
+      font-weight: 500;
+    }
+
+    .session-selector select {
+      flex: 1;
+      padding: 6px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 12px;
+      background: white;
+      cursor: pointer;
+      color: #374151;
+    }
+
+    .session-selector select:focus {
+      outline: none;
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+
+    .session-selector select:disabled {
+      background: #f3f4f6;
+      cursor: not-allowed;
+      color: #9ca3af;
+    }
+
+    .session-badge {
+      font-size: 11px;
+      padding: 2px 6px;
+      background: #eff6ff;
+      color: #3b82f6;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+
+    .tab-indicator {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      background: #f3f4f6;
+      border-radius: 6px;
+      font-size: 11px;
+      color: #6b7280;
+    }
+
+    .tab-indicator #tabIndicatorIcon {
+      font-size: 14px;
     }
 
     .title {
@@ -413,10 +479,27 @@
 </head>
 <body>
   <div class="header">
-    <div class="title">UI Chatter POC</div>
-    <div class="status">
-      <span class="status-indicator" id="statusIndicator"></span>
-      <span id="statusText">Not connected</span>
+    <div class="header-row">
+      <div class="title">UI Chatter POC</div>
+      <div class="status">
+        <span class="status-indicator" id="statusIndicator"></span>
+        <span id="statusText">Not connected</span>
+      </div>
+    </div>
+
+    <!-- Session Selector -->
+    <div class="session-selector" id="sessionSelector" style="display: none;">
+      <label for="sdkSessionSelect">Resume conversation:</label>
+      <select id="sdkSessionSelect" disabled>
+        <option value="">Loading sessions...</option>
+      </select>
+      <span class="session-badge" id="sessionBadge" style="display: none;">Session</span>
+    </div>
+
+    <!-- Tab Indicator -->
+    <div class="tab-indicator" id="tabIndicator" style="display: none;">
+      <span id="tabIndicatorIcon">📑</span>
+      <span id="tabIndicatorText">Viewing conversation for: Tab</span>
     </div>
   </div>
 
