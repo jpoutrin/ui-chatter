@@ -119,32 +119,47 @@ class SessionManager:
             base_url: Optional[str] = normalize_url_for_matching(page_url)
             assert base_url is not None, "normalize_url_for_matching returned None for truthy page_url"
 
-            # Check if other tabs have active conversations for this URL
-            other_tabs_active = await self.session_store.has_other_active_tabs(
-                base_url=base_url,
-                current_tab_id=tab_id,
+            # PRIORITY 1: Check if THIS specific tab has a recent session (reconnect scenario)
+            tab_session = await self.session_store.find_tab_session(
+                tab_id=tab_id,
                 max_age_minutes=settings.AUTO_RESUME_MAX_AGE_MINUTES
             )
 
-            if other_tabs_active:
-                # Other tabs active → create new session for this tab
+            if tab_session:
+                # Resume this tab's own session (reconnect after disconnect)
+                sdk_session_id = tab_session.get('sdk_session_id')
+                resumed = True
                 logger.info(
-                    f"Other tabs active for {base_url}, creating new session for tab {tab_id}"
+                    f"Reconnect: resuming tab {tab_id}'s own session "
+                    f"(SDK: {sdk_session_id}) for {base_url}"
                 )
             else:
-                # No other tabs → resume most recent session
-                resumable = await self.session_store.find_resumable_session(
+                # PRIORITY 2: Check if other tabs have active conversations for this URL
+                other_tabs_active = await self.session_store.has_other_active_tabs(
                     base_url=base_url,
+                    current_tab_id=tab_id,
                     max_age_minutes=settings.AUTO_RESUME_MAX_AGE_MINUTES
                 )
 
-                if resumable:
-                    sdk_session_id = resumable.get('sdk_session_id')
-                    resumed = True
+                if other_tabs_active:
+                    # Other tabs active → create new session for this tab
                     logger.info(
-                        f"Auto-resuming session {resumable['session_id']} "
-                        f"(SDK: {sdk_session_id}) for {base_url} (no other tabs active)"
+                        f"Other tabs active for {base_url}, creating new session for tab {tab_id}"
                     )
+                else:
+                    # PRIORITY 3: No other tabs → resume most recent session (any tab)
+                    resumable = await self.session_store.find_resumable_session(
+                        base_url=base_url,
+                        max_age_minutes=settings.AUTO_RESUME_MAX_AGE_MINUTES
+                    )
+
+                    if resumable:
+                        sdk_session_id = resumable.get('sdk_session_id')
+                        resumed = True
+                        logger.info(
+                            f"Auto-resuming session {resumable['session_id']} "
+                            f"(SDK: {sdk_session_id}) for {base_url} (no other tabs active)"
+                        )
 
         # For new sessions: Don't pass sdk_session_id (will be captured from SDK)
         # For resumed sessions: Pass resume_session_id
@@ -269,10 +284,21 @@ class SessionManager:
 
     async def _cleanup_loop(self) -> None:
         """Background task to cleanup idle sessions."""
+        cleanup_counter = 0
         while True:
             try:
                 await asyncio.sleep(60)  # Check every minute
                 await self._cleanup_idle_sessions()
+
+                # Permanently delete very old inactive sessions once per day
+                cleanup_counter += 1
+                if cleanup_counter >= 1440:  # 1440 minutes = 24 hours
+                    cleanup_counter = 0
+                    if self.session_store:
+                        deleted = await self.session_store.delete_old_inactive_sessions(max_age_days=30)
+                        if deleted > 0:
+                            logger.info(f"Daily cleanup: Permanently deleted {deleted} old inactive sessions")
+
             except asyncio.CancelledError:
                 break
             except Exception as e:

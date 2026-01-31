@@ -288,6 +288,17 @@ async function loadChatHistory(sessionId) {
   }
 
   try {
+    // First, try to get SDK session ID from Chrome storage (more reliable)
+    let sdkSessionIdForHistory = null;
+    if (currentTabId) {
+      const storageKey = `sdk_session_${currentTabId}`;
+      const result = await chrome.storage.local.get(storageKey);
+      sdkSessionIdForHistory = result[storageKey];
+      if (sdkSessionIdForHistory) {
+        console.log(`[UI CHATTER] Found SDK session in storage: ${sdkSessionIdForHistory}`);
+      }
+    }
+
     const url = `http://localhost:3456/sessions/${sessionId}/messages`;
     console.log('[UI CHATTER] Fetching from:', url);
 
@@ -797,6 +808,13 @@ async function updateSdkSessionFromBackend() {
     if (sdkSessionId && sdkSessionId !== currentSdkSessionId) {
       currentSdkSessionId = sdkSessionId;
       console.log('[UI CHATTER] SDK session established:', currentSdkSessionId);
+
+      // Save to Chrome local storage for persistence across reconnects
+      if (currentTabId) {
+        const storageKey = `sdk_session_${currentTabId}`;
+        await chrome.storage.local.set({ [storageKey]: currentSdkSessionId });
+        console.log(`[UI CHATTER] Saved SDK session to storage: ${storageKey} = ${currentSdkSessionId}`);
+      }
 
       // Update background worker's connection object with SDK session ID
       if (currentTabId) {

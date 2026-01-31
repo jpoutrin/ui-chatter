@@ -291,9 +291,14 @@ chrome.tabs.onUpdated.addListener((tabId: number, changeInfo: chrome.tabs.TabCha
 });
 
 // Listen for tab closure
-chrome.tabs.onRemoved.addListener((tabId: number) => {
+chrome.tabs.onRemoved.addListener(async (tabId: number) => {
   console.log(`[TAB ${tabId}] Tab closed, cleaning up connection`);
   disconnectTab(tabId);
+
+  // Clean up SDK session ID from Chrome storage
+  const storageKey = `sdk_session_${tabId}`;
+  await chrome.storage.local.remove(storageKey);
+  console.log(`[TAB ${tabId}] Cleaned up SDK session from storage`);
 
   if (tabId === currentActiveTab) {
     currentActiveTab = null;

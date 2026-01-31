@@ -262,7 +262,23 @@ class SessionStore:
             logger.info(f"Updated permission mode to {mode} for session {session_id}")
 
     async def delete_session(self, session_id: str) -> None:
-        """Delete session metadata."""
+        """Mark session as inactive (soft delete to preserve SDK session ID mapping)."""
+        await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE sessions
+                SET status = 'inactive'
+                WHERE session_id = ?
+                """,
+                (session_id,)
+            )
+            await db.commit()
+            logger.info(f"Marked session {session_id} as inactive (preserving SDK session mapping)")
+
+    async def permanently_delete_session(self, session_id: str) -> None:
+        """Permanently delete session from database (hard delete)."""
         await self.initialize()
 
         async with aiosqlite.connect(self.db_path) as db:
@@ -270,6 +286,7 @@ class SessionStore:
                 "DELETE FROM sessions WHERE session_id = ?", (session_id,)
             )
             await db.commit()
+            logger.info(f"Permanently deleted session {session_id}")
 
     async def get_active_sessions(self) -> List[Dict[str, Any]]:
         """Get all active sessions for recovery."""
@@ -413,6 +430,40 @@ class SessionStore:
 
             return count
 
+    async def delete_old_inactive_sessions(self, max_age_days: int = 30) -> int:
+        """
+        Permanently delete very old inactive/archived sessions.
+
+        This prevents the database from growing indefinitely while preserving
+        recent session history for recovery.
+
+        Args:
+            max_age_days: Delete sessions older than this many days (default: 30)
+
+        Returns:
+            Number of sessions deleted
+        """
+        await self.initialize()
+
+        cutoff = datetime.now() - timedelta(days=max_age_days)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                DELETE FROM sessions
+                WHERE status IN ('inactive', 'archived')
+                  AND last_activity < ?
+                """,
+                (cutoff.isoformat(),),
+            )
+            count = cursor.rowcount
+            await db.commit()
+
+            if count > 0:
+                logger.info(f"Permanently deleted {count} old inactive session(s)")
+
+            return count
+
     async def has_other_active_tabs(
         self,
         base_url: str,
@@ -443,6 +494,39 @@ class SessionStore:
             ) as cursor:
                 count = await cursor.fetchone()
                 return count[0] > 0 if count else False
+
+    async def find_tab_session(
+        self,
+        tab_id: str,
+        max_age_minutes: int = 30
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Find most recent session for a specific tab.
+
+        Returns the most recently active session for this specific tab
+        within the time window. Used for reconnect scenarios where we want
+        to resume the same tab's previous session.
+        """
+        await self.initialize()
+
+        cutoff = datetime.now() - timedelta(minutes=max_age_minutes)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT * FROM sessions
+                WHERE tab_id = ?
+                  AND status IN ('active', 'inactive')
+                  AND last_activity > ?
+                  AND sdk_session_id IS NOT NULL
+                ORDER BY last_activity DESC
+                LIMIT 1
+                """,
+                (tab_id, cutoff.isoformat())
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
 
     async def find_resumable_session(
         self,

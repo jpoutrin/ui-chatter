@@ -30,9 +30,9 @@ class SessionRepository:
 
     def __init__(self, project_path: str):
         self.project_path = project_path
-        # Claude Code encodes project paths by replacing / with -
+        # Claude Code encodes project paths by replacing / and . with -
         # and adding a leading dash
-        self.project_hash = '-' + project_path.lstrip('/').replace('/', '-')
+        self.project_hash = '-' + project_path.lstrip('/').replace('/', '-').replace('.', '-')
         self.sessions_dir = Path.home() / '.claude' / 'projects' / self.project_hash
         logger.info(f"SessionRepository initialized with project_hash: {self.project_hash}")
         logger.info(f"Session directory: {self.sessions_dir}")
