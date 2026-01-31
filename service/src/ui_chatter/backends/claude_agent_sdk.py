@@ -4,9 +4,11 @@ import asyncio
 import logging
 import time
 import uuid
-from typing import AsyncGenerator, Optional
+from datetime import datetime
+from typing import AsyncGenerator, Callable, Dict, Optional, Tuple
 
 from claude_agent_sdk import query, ClaudeAgentOptions
+from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny, ToolPermissionContext
 
 from .base import AgentBackend
 from ..models.context import CapturedContext
@@ -27,6 +29,32 @@ def is_debug() -> bool:
     return logger.isEnabledFor(logging.DEBUG)
 
 
+class PermissionRequestManager:
+    """Manages pending permission requests from the SDK."""
+
+    def __init__(self):
+        self._pending_requests: Dict[str, dict] = {}
+
+    def create_request(self) -> Tuple[str, asyncio.Event]:
+        """Create a new permission request and return (request_id, event)."""
+        request_id = str(uuid.uuid4())  # Use UUID to prevent collisions on service restart
+
+        event = asyncio.Event()
+        self._pending_requests[request_id] = {"event": event, "result": None}
+
+        return request_id, event
+
+    def resolve_request(self, request_id: str, result: dict) -> None:
+        """Resolve a pending permission request with user's response."""
+        if request_id in self._pending_requests:
+            self._pending_requests[request_id]["result"] = result
+            self._pending_requests[request_id]["event"].set()
+
+    def cleanup_request(self, request_id: str) -> None:
+        """Clean up a permission request after completion."""
+        self._pending_requests.pop(request_id, None)
+
+
 class ClaudeAgentSDKBackend(AgentBackend):
     """
     Backend using Claude Agent SDK with subscription authentication.
@@ -41,6 +69,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
         project_path: str,
         permission_mode: str = "bypassPermissions",
         resume_session_id: Optional[str] = None,  # For explicit resume
+        ws_send_callback: Optional[Callable] = None,  # NEW: WebSocket send callback
         **kwargs
     ):
         super().__init__(project_path)
@@ -50,6 +79,8 @@ class ClaudeAgentSDKBackend(AgentBackend):
         self.allowed_tools = [
             "Read", "Write", "Edit", "Bash", "Glob", "Grep"
         ]
+        self.ws_send_callback = ws_send_callback  # NEW: Callback to send messages to UI
+        self.permission_manager = PermissionRequestManager()  # NEW: Permission request manager
 
         # If resuming an existing session, set it
         if resume_session_id:
@@ -191,6 +222,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
                     cwd=self.project_path,
                     setting_sources=['user', 'project'],  # Load plugins
                     stderr=lambda msg: logger.error(f"[SDK STDERR] {msg}"),
+                    can_use_tool=self._can_use_tool_callback,  # NEW: Permission callback
                 )
             else:
                 logger.info(f"[AGENT SDK] Creating new session (no resume)")
@@ -200,6 +232,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
                     cwd=self.project_path,
                     setting_sources=['user', 'project'],  # Load plugins
                     stderr=lambda msg: logger.error(f"[SDK STDERR] {msg}"),
+                    can_use_tool=self._can_use_tool_callback,  # NEW: Permission callback
                 )
 
             async for msg in query(prompt=prompt, options=options):
@@ -491,7 +524,162 @@ class ClaudeAgentSDKBackend(AgentBackend):
         # Fallback to instance cache
         return self.slash_commands
 
+    async def _can_use_tool_callback(
+        self,
+        tool_name: str,
+        input_data: dict,
+        context: ToolPermissionContext
+    ) -> PermissionResultAllow | PermissionResultDeny:
+        """
+        Permission callback for Claude Agent SDK.
+
+        Handles two flows:
+        1. Tool permission requests (Bash, Write, Edit, etc.)
+        2. AskUserQuestion prompts (multi-choice questions from Claude)
+
+        Returns:
+            PermissionResultAllow: If approved (with optional modified input)
+            PermissionResultDeny: If denied or timeout (with reason message)
+        """
+        # Special handling for AskUserQuestion
+        if tool_name == "AskUserQuestion":
+            return await self._handle_ask_user_question(input_data)
+
+        # Bypass mode: auto-approve everything
+        if self.permission_mode == "bypassPermissions":
+            return PermissionResultAllow(updated_input=input_data)
+
+        # For other modes, request user approval
+        return await self._request_permission_from_ui(tool_name, input_data, context)
+
+    async def _request_permission_from_ui(
+        self,
+        tool_name: str,
+        input_data: dict,
+        context: ToolPermissionContext
+    ) -> PermissionResultAllow | PermissionResultDeny:
+        """Send permission request to UI and wait for user response."""
+        if not self.ws_send_callback:
+            logger.warning("No WebSocket callback, denying permission")
+            return PermissionResultDeny(message="No UI connection available")
+
+        # Create permission request
+        request_id, event = self.permission_manager.create_request()
+
+        # Send request to UI via WebSocket with error handling
+        try:
+            await self.ws_send_callback({
+                "type": "permission_request",
+                "request_id": request_id,
+                "request_type": "tool_approval",
+                "tool_name": tool_name,
+                "input_data": input_data,
+                "timeout_seconds": 60,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+        except Exception as e:
+            # WebSocket send failed (disconnection, etc.)
+            self.permission_manager.cleanup_request(request_id)
+            logger.warning(f"Failed to send permission request: {e}")
+            return PermissionResultDeny(message=f"Connection lost: {e}")
+
+        # Wait for user response with 60s timeout
+        try:
+            await asyncio.wait_for(event.wait(), timeout=60.0)
+
+            # Get result
+            result = self.permission_manager._pending_requests[request_id]["result"]
+            self.permission_manager.cleanup_request(request_id)
+
+            if result["approved"]:
+                return PermissionResultAllow(
+                    updated_input=result.get("modified_input") or input_data
+                )
+            else:
+                return PermissionResultDeny(
+                    message=result.get("reason") or "User denied permission"
+                )
+
+        except asyncio.TimeoutError:
+            self.permission_manager.cleanup_request(request_id)
+            logger.warning(f"Permission request {request_id} timed out")
+            return PermissionResultDeny(
+                message="Permission request timed out (60 seconds)"
+            )
+
+    async def _handle_ask_user_question(
+        self,
+        input_data: dict
+    ) -> PermissionResultAllow | PermissionResultDeny:
+        """Handle AskUserQuestion tool - display multi-choice questions to user."""
+        if not self.ws_send_callback:
+            return PermissionResultDeny(message="No UI connection available")
+
+        request_id, event = self.permission_manager.create_request()
+
+        # Send AskUserQuestion request to UI
+        try:
+            await self.ws_send_callback({
+                "type": "permission_request",
+                "request_id": request_id,
+                "request_type": "ask_user_question",
+                "questions": input_data.get("questions", []),
+                "timeout_seconds": 60,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+        except Exception as e:
+            self.permission_manager.cleanup_request(request_id)
+            logger.warning(f"Failed to send AskUserQuestion request: {e}")
+            return PermissionResultDeny(message=f"Connection lost: {e}")
+
+        # Wait for answers with timeout
+        try:
+            await asyncio.wait_for(event.wait(), timeout=60.0)
+
+            result = self.permission_manager._pending_requests[request_id]["result"]
+            self.permission_manager.cleanup_request(request_id)
+
+            if result["approved"]:
+                # Return answers in SDK format
+                return PermissionResultAllow(
+                    updated_input={
+                        "questions": input_data.get("questions", []),
+                        "answers": result.get("answers", {})
+                    }
+                )
+            else:
+                return PermissionResultDeny(message="User did not answer")
+
+        except asyncio.TimeoutError:
+            self.permission_manager.cleanup_request(request_id)
+            return PermissionResultDeny(message="Question timed out (60 seconds)")
+
+    def resolve_permission(self, request_id: str, response: dict) -> None:
+        """
+        Called by WebSocket handler to resolve a permission request.
+
+        Args:
+            request_id: Unique identifier from permission_request
+            response: User's response containing approved, modified_input, answers, reason
+        """
+        self.permission_manager.resolve_request(request_id, response)
+
     async def shutdown(self) -> None:
-        """Cleanup resources."""
-        # SDK handles cleanup automatically
-        logger.info("Shutting down Claude Agent SDK backend (no cleanup needed)")
+        """
+        Cleanup resources and resolve pending permission requests.
+
+        Called when:
+        - Backend is being recreated (e.g., permission mode change)
+        - Session is being destroyed
+        - Service is shutting down
+
+        This ensures SDK queries don't hang when backend is replaced.
+        """
+        # Deny all pending permissions
+        for request_id in list(self.permission_manager._pending_requests.keys()):
+            self.permission_manager.resolve_request(request_id, {
+                "approved": False,
+                "reason": "Backend shutdown during pending request"
+            })
+
+        logger.info("Claude Agent SDK backend shutdown complete")

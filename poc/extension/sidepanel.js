@@ -29,6 +29,10 @@ const activeTools = new Map();
 let activeToolPanel = null;
 let currentStreamId = null;
 
+// Permission modal state
+let currentPermissionRequest = null;
+let permissionTimer = null;
+
 // Markdown library load state
 let librariesLoaded = false;
 
@@ -48,6 +52,7 @@ const elements = {
   statusIndicator: document.getElementById('statusIndicator'),
   statusText: document.getElementById('statusText'),
   selectedElement: document.getElementById('selectedElement'),
+  permissionModeSelect: document.getElementById('permissionModeSelect'),
   elementTag: document.getElementById('elementTag'),
   messages: document.getElementById('messages'),
   messageInput: document.getElementById('messageInput'),
@@ -563,6 +568,47 @@ function handleServerMessage(message) {
       if (message.status !== 'thinking' && message.status !== 'done') {
         addMessage('status', message.detail || message.status);
       }
+      break;
+
+    case 'permission_request':
+      handlePermissionRequest(message);
+      break;
+
+    case 'session_cleared':
+      // Handle session cleared - clear UI and update session ID
+      currentSdkSessionId = message.sdk_session_id;
+
+      // Clear all messages
+      elements.messages.innerHTML = '';
+
+      // Add confirmation message
+      addMessage('status', '✨ ' + (message.message || 'New conversation started'));
+
+      // Hide session badge (no longer resuming)
+      if (elements.sessionBadge) {
+        elements.sessionBadge.style.display = 'none';
+      }
+
+      // Reset session dropdown to show new session
+      if (elements.sdkSessionSelect) {
+        elements.sdkSessionSelect.value = '';
+      }
+
+      // Refresh available sessions list
+      if (currentSessionId) {
+        fetchAvailableSessions(currentSessionId);
+      }
+
+      // Update SDK session ID in background
+      if (currentTabId) {
+        chrome.runtime.sendMessage({
+          type: 'update_sdk_session_id',
+          tabId: currentTabId,
+          sdkSessionId: message.sdk_session_id
+        });
+      }
+
+      console.log('[UI CHATTER] Session cleared, new SDK session:', message.sdk_session_id);
       break;
 
     case MessageType.ERROR:
@@ -1146,6 +1192,22 @@ function sendMessage() {
   const message = elements.messageInput.value.trim();
   if (!message) return;
 
+  // Check for /clear command
+  if (message === '/clear') {
+    // Clear input immediately
+    elements.messageInput.value = '';
+
+    // Show clearing message
+    addMessage('status', 'Clearing conversation and starting new session...');
+
+    // Send clear session request to backend
+    chrome.runtime.sendMessage({
+      type: 'clear_session'
+    });
+
+    return;
+  }
+
   // Add user message to chat
   addMessage('user', message);
 
@@ -1175,6 +1237,86 @@ elements.messageInput.addEventListener('keypress', (e) => {
 // Initialize: connect to current tab
 (async function initializeSidePanel() {
   console.log('[UI CHATTER] Side panel initializing...');
+
+  // Ensure the sidepanel has focus for keyboard shortcuts
+  window.focus();
+
+  // Add visual hint that input needs activation
+  const input = document.getElementById('messageInput');
+  if (input) {
+    input.classList.add('needs-activation');
+  }
+
+  // Auto-focus chat input for immediate typing (aggressive strategy)
+  const focusInput = () => {
+    const input = document.getElementById('messageInput');
+    if (input) {
+      input.focus();
+      const focused = document.activeElement === input;
+      console.log('[FOCUS] Attempted focus, successful:', focused, 'activeElement:', document.activeElement?.id || document.activeElement?.tagName);
+      return focused;
+    } else {
+      console.warn('[FOCUS] Input element not found');
+      return false;
+    }
+  };
+
+  // Try blur-then-focus trick (sometimes helps)
+  const blurThenFocus = () => {
+    const input = document.getElementById('messageInput');
+    if (input) {
+      input.blur();
+      setTimeout(() => input.focus(), 0);
+    }
+  };
+
+  // Try multiple times with different strategies
+  focusInput(); // Immediate
+  setTimeout(focusInput, 10);
+  setTimeout(blurThenFocus, 20); // Try blur-focus trick
+  setTimeout(focusInput, 50);
+  setTimeout(focusInput, 100);
+  setTimeout(focusInput, 200);
+  setTimeout(focusInput, 500);
+  setTimeout(focusInput, 1000); // One more at 1s
+
+  // Use requestAnimationFrame for next render cycle
+  requestAnimationFrame(() => {
+    focusInput();
+    requestAnimationFrame(focusInput);
+  });
+
+  // Focus on any interaction with the panel
+  document.addEventListener('mouseenter', focusInput, { once: false });
+
+  // One-time click anywhere to activate and focus input
+  let hasActivated = false;
+  document.addEventListener('click', (e) => {
+    if (!hasActivated) {
+      hasActivated = true;
+      focusInput();
+      // Remove visual hint and update placeholder
+      const input = document.getElementById('messageInput');
+      if (input) {
+        input.classList.remove('needs-activation');
+        if (input.placeholder === 'Click here to start typing...') {
+          input.placeholder = 'Type your message...';
+        }
+      }
+      console.log('[FOCUS] Panel activated on first click');
+    }
+    // Don't steal focus if user clicked a button or input
+    if (!e.target.matches('button, input, select, textarea, a')) {
+      focusInput();
+    }
+  }, { capture: true }); // Use capture to catch clicks early
+
+  // Also try to focus when window gains focus
+  window.addEventListener('focus', () => {
+    console.log('[FOCUS] Window gained focus');
+    setTimeout(focusInput, 10);
+    setTimeout(focusInput, 50);
+  });
 
   try {
     // Get current tab
@@ -1230,6 +1372,78 @@ elements.messageInput.addEventListener('keypress', (e) => {
   AutocompleteController.init();
 })();
 
+// Initialize permission mode selector
+(async function initializePermissionMode() {
+  console.log('[PERMISSION MODE] Initializing...');
+
+  // Load current permission mode from storage
+  const result = await chrome.storage.local.get(['permissionMode']);
+  const currentMode = result.permissionMode || 'plan';
+
+  // Set the select value
+  if (elements.permissionModeSelect) {
+    elements.permissionModeSelect.value = currentMode;
+    console.log('[PERMISSION MODE] Loaded:', currentMode);
+  }
+
+  // Listen for mode changes
+  elements.permissionModeSelect.addEventListener('change', async (e) => {
+    const newMode = e.target.value;
+    console.log('[PERMISSION MODE] Changed to:', newMode);
+
+    // Save to storage
+    await chrome.storage.local.set({ permissionMode: newMode });
+
+    // Notify background script to update server
+    chrome.runtime.sendMessage({
+      type: 'permission_mode_changed',
+      mode: newMode
+    });
+
+    // Show confirmation
+    addMessage('status', `Conversation mode changed to: ${getModeLabel(newMode)}`);
+  });
+})();
+
+// Helper function to get mode label
+function getModeLabel(mode) {
+  const labels = {
+    'plan': 'Planning',
+    'bypassPermissions': 'Fast',
+    'acceptEdits': 'Balanced'
+  };
+  return labels[mode] || mode;
+}
+
+// Shift+Tab to cycle through permission modes
+document.addEventListener('keydown', (e) => {
+  // Check for Shift+Tab
+  if (e.shiftKey && e.key === 'Tab') {
+    // Don't interfere with permission modal
+    if (currentPermissionRequest || document.getElementById('permissionModal')?.style.display === 'block') {
+      return;
+    }
+
+    // Make sure element exists
+    const modeSelect = document.getElementById('permissionModeSelect');
+    if (!modeSelect) {
+      console.warn('[PERMISSION MODE] Select element not found');
+      return;
+    }
+
+    e.preventDefault();
+
+    const modes = ['plan', 'bypassPermissions', 'acceptEdits'];
+    const currentIndex = modes.indexOf(modeSelect.value);
+    const nextIndex = (currentIndex + 1) % modes.length;
+
+    modeSelect.value = modes[nextIndex];
+    modeSelect.dispatchEvent(new Event('change'));
+
+    console.log('[PERMISSION MODE] Cycled to:', modes[nextIndex]);
+  }
+});
+
 // Check markdown libraries on load
 window.addEventListener('load', () => {
   if (!checkLibraries()) {
@@ -1238,11 +1452,249 @@ window.addEventListener('load', () => {
   }
 });
 
+// ===== Permission Support =====
+
+function handlePermissionRequest(message) {
+  const {
+    request_id,
+    request_type,
+    tool_name,
+    input_data,
+    questions,
+    timeout_seconds
+  } = message;
+
+  currentPermissionRequest = { request_id, request_type };
+
+  if (request_type === 'ask_user_question') {
+    showAskUserQuestion(questions, timeout_seconds || 60);
+  } else {
+    showToolPermission(tool_name, input_data, timeout_seconds || 60);
+  }
+}
+
+function showToolPermission(toolName, inputData, timeoutSeconds) {
+  // Show tool approval UI, hide question UI
+  document.getElementById('toolApprovalContent').style.display = 'block';
+  document.getElementById('questionContainer').style.display = 'none';
+
+  // Populate tool details
+  document.getElementById('permissionToolName').textContent = toolName;
+  document.getElementById('permissionToolInput').textContent =
+    formatToolInput(toolName, inputData);
+
+  // Show modal
+  document.getElementById('permissionModal').style.display = 'block';
+
+  // Start countdown timer (58s client-side, 60s server-side)
+  startPermissionTimer(Math.max(58, timeoutSeconds - 2));
+
+  // Focus allow button for keyboard accessibility
+  document.getElementById('allowBtn').focus();
+}
+
+function formatToolInput(toolName, input) {
+  // Tool-specific formatting for better readability
+  if (toolName === 'Bash') {
+    const cmd = input.command || '';
+    const desc = input.description || '';
+
+    // Highlight dangerous patterns
+    let formatted = `$ ${cmd}`;
+    if (cmd.includes('rm ') || cmd.includes('sudo') || cmd.includes('--force')) {
+      formatted = `⚠️ DANGER: ${formatted}`;
+    }
+
+    if (desc) {
+      formatted += `\n\n${desc}`;
+    }
+
+    return formatted;
+  } else if (toolName === 'Write') {
+    const path = input.file_path || '';
+    const content = input.content || '';
+    const preview = content.substring(0, 200);
+    return `File: ${path}\n\nContent preview:\n${preview}${
+      content.length > 200 ? '...' : ''
+    }`;
+  } else if (toolName === 'Edit') {
+    return `File: ${input.file_path}\n\nOld: ${input.old_string}\nNew: ${input.new_string}`;
+  } else if (toolName === 'Read') {
+    return `File: ${input.file_path}${
+      input.offset ? `\nOffset: ${input.offset}` : ''
+    }${input.limit ? `\nLimit: ${input.limit} lines` : ''}`;
+  } else {
+    return JSON.stringify(input, null, 2);
+  }
+}
+
+function startPermissionTimer(seconds) {
+  let remaining = seconds;
+  const timerEl = document.getElementById('permissionTimer');
+
+  permissionTimer = setInterval(() => {
+    remaining--;
+    timerEl.textContent = `${remaining}s`;
+
+    // Visual warning when time is running out
+    if (remaining <= 10) {
+      timerEl.classList.add('warning');
+    }
+
+    if (remaining === 0) {
+      clearInterval(permissionTimer);
+      // Auto-deny on timeout
+      respondToPermission(false, null);
+    }
+  }, 1000);
+}
+
+function respondToPermission(approved, modifiedInput = null, answers = null) {
+  clearInterval(permissionTimer);
+
+  // Send response via background script
+  chrome.runtime.sendMessage({
+    type: 'sendToServer',
+    data: {
+      type: 'permission_response',
+      request_id: currentPermissionRequest.request_id,
+      approved,
+      modified_input: modifiedInput,
+      answers: answers,
+      reason: approved ? null : 'User denied'
+    }
+  });
+
+  // Hide modal
+  document.getElementById('permissionModal').style.display = 'none';
+  document.getElementById('permissionTimer').classList.remove('warning');
+  currentPermissionRequest = null;
+}
+
+function showAskUserQuestion(questions, timeoutSeconds) {
+  // Hide tool UI, show question UI
+  document.getElementById('toolApprovalContent').style.display = 'none';
+  document.getElementById('questionContainer').style.display = 'block';
+
+  const container = document.getElementById('questionContainer');
+  container.innerHTML = '';
+
+  // Store questions for later retrieval
+  currentPermissionRequest.questions = questions;
+
+  questions.forEach((q, index) => {
+    const questionDiv = document.createElement('div');
+    questionDiv.className = 'question-block';
+
+    const header = document.createElement('h4');
+    header.textContent = q.header || q.question;
+    questionDiv.appendChild(header);
+
+    const paragraph = document.createElement('p');
+    paragraph.textContent = q.question;
+    paragraph.className = 'question-text';
+    questionDiv.appendChild(paragraph);
+
+    q.options.forEach(opt => {
+      const label = document.createElement('label');
+      label.className = 'option-label';
+
+      const input = document.createElement('input');
+      input.type = q.multiSelect ? 'checkbox' : 'radio';
+      input.name = `question-${index}`;
+      input.value = opt.label;
+      input.className = 'option-input';
+
+      label.appendChild(input);
+
+      const optionText = document.createElement('div');
+      optionText.className = 'option-text';
+
+      const optionLabel = document.createElement('div');
+      optionLabel.className = 'option-label-text';
+      optionLabel.textContent = opt.label;
+      optionText.appendChild(optionLabel);
+
+      if (opt.description) {
+        const desc = document.createElement('div');
+        desc.className = 'option-description';
+        desc.textContent = opt.description;
+        optionText.appendChild(desc);
+      }
+
+      label.appendChild(optionText);
+      questionDiv.appendChild(label);
+    });
+
+    container.appendChild(questionDiv);
+  });
+
+  document.getElementById('permissionModal').style.display = 'block';
+  startPermissionTimer(Math.max(58, timeoutSeconds - 2));
+}
+
+function collectQuestionAnswers() {
+  const questions = currentPermissionRequest.questions;
+  const answers = {};
+
+  questions.forEach((q, index) => {
+    const inputs = document.querySelectorAll(
+      `input[name="question-${index}"]:checked`
+    );
+
+    if (q.multiSelect) {
+      // Multi-select: join labels with ", "
+      answers[q.question] = Array.from(inputs)
+        .map(i => i.value)
+        .join(', ');
+    } else {
+      // Single select: just the label
+      answers[q.question] = inputs[0]?.value || '';
+    }
+  });
+
+  return answers;
+}
+
+// Event listeners for permission modal
+document.getElementById('allowBtn').addEventListener('click', () => {
+  if (currentPermissionRequest.request_type === 'ask_user_question') {
+    const answers = collectQuestionAnswers();
+    respondToPermission(true, null, answers);
+  } else {
+    respondToPermission(true, null, null);
+  }
+});
+
+document.getElementById('denyBtn').addEventListener('click', () => {
+  respondToPermission(false, null, null);
+});
+
+// Keyboard shortcuts for permission modal
+document.addEventListener('keydown', e => {
+  if (!currentPermissionRequest) return;
+
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (currentPermissionRequest.request_type === 'ask_user_question') {
+      const answers = collectQuestionAnswers();
+      respondToPermission(true, null, answers);
+    } else {
+      respondToPermission(true, null, null);
+    }
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    respondToPermission(false, null, null);
+  }
+});
+
+// ===== End Permission Support =====
+
 // Extension lifecycle logging
 console.log('[UI CHATTER] Side panel loaded');
 console.log('[UI CHATTER] Timestamp:', new Date().toISOString());
 
-// Log when panel becomes visible
+// Log when panel becomes visible and ensure focus
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     console.log('[UI CHATTER] Panel hidden/minimized');
@@ -1254,6 +1706,31 @@ document.addEventListener('visibilitychange', () => {
       currentSdkSessionId,
       hasContext: !!currentContext
     });
+
+    // Ensure focus when panel becomes visible
+    window.focus();
+
+    // Auto-focus chat input for immediate typing (multiple attempts)
+    const focusOnVisible = () => {
+      const input = document.getElementById('messageInput');
+      if (input) {
+        input.blur(); // Try blur first
+        setTimeout(() => {
+          input.focus();
+          const focused = document.activeElement === input;
+          console.log('[FOCUS] Visibility change focus attempt, successful:', focused);
+        }, 0);
+      }
+    };
+
+    // Try multiple times
+    focusOnVisible();
+    setTimeout(focusOnVisible, 10);
+    setTimeout(focusOnVisible, 50);
+    setTimeout(focusOnVisible, 100);
+    setTimeout(focusOnVisible, 200);
+    setTimeout(focusOnVisible, 500);
+    requestAnimationFrame(focusOnVisible);
   }
 });
 

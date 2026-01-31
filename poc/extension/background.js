@@ -351,6 +351,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
   }
 
+  else if (message.type === 'clear_session') {
+    // Clear session and start new conversation
+    const tabId = currentActiveTab;
+    const connection = tabConnections[tabId];
+
+    if (connection?.ws?.readyState === WebSocket.OPEN) {
+      const clearMsg = {
+        type: 'clear_session'
+      };
+      console.log(`[TAB ${tabId}] [WS OUT] clear_session`, clearMsg);
+      connection.ws.send(JSON.stringify(clearMsg));
+    } else {
+      console.error(`[TAB ${tabId}] WebSocket not connected`);
+    }
+  }
+
   else if (message.type === 'cancel_request') {
     // Cancel current stream for the active tab
     const tabId = currentActiveTab;
@@ -483,8 +499,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // Extension icon click - open side panel
-chrome.action.onClicked.addListener((tab) => {
-  chrome.sidePanel.open({ windowId: tab.windowId });
+// Note: Chrome sidePanel API doesn't support programmatic closing.
+// Users must close the panel using the X button.
+chrome.action.onClicked.addListener(async (tab) => {
+  const windowId = tab.windowId;
+
+  try {
+    await chrome.sidePanel.open({ windowId });
+    console.log('[SIDEPANEL] Opened for window:', windowId);
+  } catch (error) {
+    console.error('[SIDEPANEL] Failed to open:', error);
+  }
 });
 
 console.log('UI Chatter background worker started (per-tab WebSocket mode)');

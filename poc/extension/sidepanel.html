@@ -51,6 +51,42 @@
       align-items: center;
     }
 
+    .permission-mode-selector {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      background: white;
+      border-top: 1px solid #e5e7eb;
+    }
+
+    .mode-icon {
+      font-size: 16px;
+      color: #6b7280;
+    }
+
+    .permission-mode-selector select {
+      padding: 6px 12px;
+      border: none;
+      background: transparent;
+      font-size: 13px;
+      font-weight: 500;
+      color: #374151;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .permission-mode-selector select:hover {
+      color: #1f2937;
+    }
+
+    .mode-hint {
+      margin-left: auto;
+      font-size: 11px;
+      color: #9ca3af;
+      white-space: nowrap;
+    }
+
     .session-selector {
       display: flex;
       align-items: center;
@@ -281,6 +317,22 @@
 
     .input-area input:focus {
       border-color: #3b82f6;
+    }
+
+    /* Subtle hint animation for input (removed on first interaction) */
+    .input-area input.needs-activation {
+      animation: subtle-pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes subtle-pulse {
+      0%, 100% {
+        border-color: #d1d5db;
+        box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+      }
+      50% {
+        border-color: #93c5fd;
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+      }
     }
 
     .btn {
@@ -570,6 +622,173 @@
     .autocomplete-list::-webkit-scrollbar-thumb:hover {
       background: #9ca3af;
     }
+
+    /* Permission Modal Styles */
+    .permission-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 1000;
+      display: none;
+    }
+
+    .permission-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(2px);
+    }
+
+    .permission-dialog {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+      max-width: 500px;
+      width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+
+    .permission-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 20px;
+      border-bottom: 1px solid #e5e7eb;
+    }
+
+    .permission-icon {
+      font-size: 24px;
+    }
+
+    .permission-header h3 {
+      flex: 1;
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .permission-timer {
+      font-weight: 600;
+      padding: 4px 12px;
+      background: #f3f4f6;
+      border-radius: 12px;
+      font-size: 14px;
+    }
+
+    .permission-timer.warning {
+      background: #fee2e2;
+      color: #ef4444;
+      animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .permission-body {
+      padding: 20px;
+    }
+
+    .tool-info {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .tool-label {
+      font-weight: 600;
+      color: #6b7280;
+      min-width: 60px;
+    }
+
+    .tool-value {
+      font-family: 'Courier New', monospace;
+      font-weight: 600;
+    }
+
+    .tool-input {
+      margin-top: 16px;
+    }
+
+    .tool-input-display {
+      background: #1f2937;
+      color: #e5e7eb;
+      padding: 12px;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .question-block {
+      margin-bottom: 24px;
+    }
+
+    .question-block h4 {
+      margin: 0 0 8px 0;
+      font-size: 16px;
+    }
+
+    .question-text {
+      margin: 0 0 12px 0;
+      color: #6b7280;
+    }
+
+    .option-label {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 12px;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+
+    .option-label:hover {
+      background: #f9fafb;
+    }
+
+    .option-input {
+      margin-top: 4px;
+      cursor: pointer;
+    }
+
+    .option-text {
+      flex: 1;
+    }
+
+    .option-label-text {
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+
+    .option-description {
+      font-size: 13px;
+      color: #6b7280;
+    }
+
+    .permission-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+      padding: 16px 20px;
+      border-top: 1px solid #e5e7eb;
+    }
   </style>
 </head>
 <body>
@@ -627,10 +846,60 @@
     <input
       type="text"
       id="messageInput"
-      placeholder="Type your message..."
+      placeholder="Click here to start typing..."
+      autofocus
+      tabindex="1"
     />
     <button class="btn btn-danger" id="stopBtn" style="display: none;">⏹ Stop</button>
     <button class="btn btn-primary" id="sendBtn">Send</button>
+  </div>
+
+  <!-- Permission Mode Selector -->
+  <div class="permission-mode-selector">
+    <span class="mode-icon">⏸</span>
+    <select id="permissionModeSelect">
+      <option value="plan">Plan mode</option>
+      <option value="bypassPermissions">Fast mode</option>
+      <option value="acceptEdits">Balanced mode</option>
+    </select>
+    <span class="mode-hint">Press Shift+Tab to switch modes</span>
+  </div>
+
+  <!-- Permission Modal -->
+  <div id="permissionModal" class="permission-modal">
+    <div class="permission-overlay"></div>
+    <div class="permission-dialog">
+      <div class="permission-header">
+        <span class="permission-icon">🔐</span>
+        <h3 id="permissionTitle">Permission Required</h3>
+        <span id="permissionTimer" class="permission-timer">60s</span>
+      </div>
+
+      <div class="permission-body">
+        <!-- Tool approval UI -->
+        <div id="toolApprovalContent" style="display: none;">
+          <div class="tool-info">
+            <div class="tool-label">Tool:</div>
+            <div id="permissionToolName" class="tool-value"></div>
+          </div>
+
+          <div class="tool-input">
+            <div class="tool-label">Details:</div>
+            <pre id="permissionToolInput" class="tool-input-display"></pre>
+          </div>
+        </div>
+
+        <!-- AskUserQuestion UI -->
+        <div id="questionContainer" style="display: none;">
+          <!-- Dynamically populated with radio/checkbox options -->
+        </div>
+      </div>
+
+      <div class="permission-footer">
+        <button id="denyBtn" class="btn btn-secondary">Deny (Esc)</button>
+        <button id="allowBtn" class="btn btn-primary">Allow (Enter)</button>
+      </div>
+    </div>
   </div>
 
   <script src="sidepanel.js"></script>

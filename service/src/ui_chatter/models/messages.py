@@ -120,3 +120,29 @@ class StreamControl(BaseModel):
     stream_id: str = Field(..., description="Unique stream session identifier")
     reason: Optional[str] = Field(None, description="Reason for state change")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional context")
+
+
+# Permission support models
+
+class PermissionRequest(BaseModel):
+    """Permission request sent to UI."""
+
+    type: Literal["permission_request"] = "permission_request"
+    request_id: str = Field(..., description="UUID unique identifier")
+    request_type: Literal["tool_approval", "ask_user_question"] = Field(..., description="Type of permission request")
+    tool_name: Optional[str] = Field(None, description="Tool name (for tool_approval)")
+    input_data: Optional[Dict[str, Any]] = Field(None, description="Tool parameters (for tool_approval)")
+    questions: Optional[list] = Field(None, description="Questions (for ask_user_question)")
+    timeout_seconds: int = Field(default=60, description="Seconds until auto-deny")
+    timestamp: str = Field(..., description="ISO 8601 timestamp")
+
+
+class PermissionResponse(BaseModel):
+    """Permission response from UI."""
+
+    type: Literal["permission_response"] = "permission_response"
+    request_id: str = Field(..., description="Request ID from permission_request")
+    approved: bool = Field(..., description="True if user approved")
+    modified_input: Optional[Dict[str, Any]] = Field(None, description="Modified tool parameters (optional)")
+    answers: Optional[Dict[str, str]] = Field(None, description="Question answers (for ask_user_question)")
+    reason: Optional[str] = Field(None, description="Denial reason (if approved=false)")

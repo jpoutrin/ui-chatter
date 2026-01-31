@@ -17,6 +17,7 @@ from .models.messages import (
     HandshakeMessage,
     UpdatePermissionModeMessage,
     PermissionModeUpdatedMessage,
+    PermissionResponse,
 )
 from .screenshot_store import ScreenshotStore
 from .session_manager import SessionManager
@@ -373,6 +374,11 @@ async def websocket_endpoint(websocket: WebSocket):
             except Exception as e:
                 logger.warning(f"Invalid handshake, using default mode: {e}")
 
+        # Create WebSocket send callback for backend permission requests
+        async def ws_send(message: dict):
+            """Callback for backend to send messages to UI."""
+            await connection_manager.send_message(session_id, message)
+
         # Create agent session with specified permission mode and auto-resume support
         session = await session_manager.create_session(
             session_id,
@@ -380,6 +386,7 @@ async def websocket_endpoint(websocket: WebSocket):
             page_url=page_url,
             tab_id=tab_id,
             auto_resume=True,
+            ws_send_callback=ws_send,
         )
 
         # Send handshake acknowledgment with resumed flag and SDK session ID
@@ -474,6 +481,90 @@ async def websocket_endpoint(websocket: WebSocket):
                             "message": str(e),
                         },
                     )
+
+            elif data["type"] == "clear_session":
+                # Handle clear session request - create a new SDK session
+                # Keep old session in database for history/resumption
+                try:
+                    # Get current session info
+                    session = await session_manager.get_session(session_id)
+                    if session:
+                        tab_id = session.tab_id
+                        page_url = session.page_url
+                        old_sdk_session_id = session.sdk_session_id
+
+                        # Shutdown old backend (keeps session in DB)
+                        await session.backend.shutdown()
+
+                        # Create new backend with no auto-resume (fresh session)
+                        new_backend = session_manager._create_backend(
+                            project_path=session.project_path,
+                            permission_mode=session.permission_mode,
+                            resume_session_id=None,  # Don't resume - start fresh
+                            ws_send_callback=ws_send
+                        )
+
+                        # Update session with new backend
+                        session.backend = new_backend
+                        session.sdk_session_id = new_backend.sdk_session_id
+
+                        # Update in database (new SDK session ID, keeps old one too)
+                        if session_manager.session_store:
+                            await session_manager.session_store.update_sdk_session(
+                                session_id, new_backend.sdk_session_id
+                            )
+
+                        # Send acknowledgment with new SDK session ID
+                        await connection_manager.send_message(
+                            session_id,
+                            {
+                                "type": "session_cleared",
+                                "sdk_session_id": new_backend.sdk_session_id,
+                                "message": "New conversation started"
+                            }
+                        )
+                        logger.info(f"Session cleared: old={old_sdk_session_id}, new={new_backend.sdk_session_id}")
+                    else:
+                        logger.warning(f"Session {session_id} not found for clearing")
+                except Exception as e:
+                    logger.error(f"Error clearing session: {e}")
+                    await connection_manager.send_message(
+                        session_id,
+                        {
+                            "type": "error",
+                            "code": "clear_session_failed",
+                            "message": str(e)
+                        }
+                    )
+
+            elif data["type"] == "permission_response":
+                # Handle permission response from UI
+                request_id = data.get("request_id")
+                if not request_id:
+                    await connection_manager.send_message(
+                        session_id,
+                        {
+                            "type": "error",
+                            "code": "invalid_request",
+                            "message": "Missing request_id in permission_response"
+                        }
+                    )
+                    continue
+
+                # Get session's backend instance and resolve permission
+                session = await session_manager.get_session(session_id)
+                if session and hasattr(session.backend, "resolve_permission"):
+                    session.backend.resolve_permission(request_id, {
+                        "approved": data.get("approved", False),
+                        "modified_input": data.get("modified_input"),
+                        "answers": data.get("answers"),
+                        "reason": data.get("reason")
+                    })
+                    logger.info(
+                        f"Resolved permission {request_id}: approved={data.get('approved')}"
+                    )
+                else:
+                    logger.warning(f"No backend found for session {session_id}")
 
             elif data["type"] == "chat":
                 # Parse chat request

@@ -22,7 +22,8 @@ class AgentSession:
         session_id: str,
         project_path: str,
         backend: AgentBackend,
-        permission_mode: str = "plan"
+        permission_mode: str = "plan",
+        ws_send_callback = None
     ):
         self.session_id = session_id
         self.project_path = project_path
@@ -30,6 +31,7 @@ class AgentSession:
         self.last_activity = datetime.now()
         self.backend = backend
         self.permission_mode = permission_mode
+        self.ws_send_callback = ws_send_callback  # Store callback for backend recreation
         # NOTE: first_message_sent removed - using backend.has_established_session instead
         self.cancel_event: Optional[asyncio.Event] = None
 
@@ -72,7 +74,8 @@ class SessionManager:
         session_id: str,
         project_path: str,
         permission_mode: Optional[str] = None,
-        resume_session_id: Optional[str] = None
+        resume_session_id: Optional[str] = None,
+        ws_send_callback = None
     ) -> AgentBackend:
         """Create ClaudeAgentSDKBackend (only backend)."""
         mode = permission_mode or self.permission_mode
@@ -81,7 +84,8 @@ class SessionManager:
         return ClaudeAgentSDKBackend(
             project_path=project_path,
             permission_mode=mode,
-            resume_session_id=resume_session_id
+            resume_session_id=resume_session_id,
+            ws_send_callback=ws_send_callback
         )
 
     async def create_session(
@@ -92,6 +96,7 @@ class SessionManager:
         page_url: Optional[str] = None,
         tab_id: Optional[str] = None,
         auto_resume: bool = True,
+        ws_send_callback = None,
     ) -> AgentSession:
         """
         Create new isolated agent session with configured backend.
@@ -142,9 +147,10 @@ class SessionManager:
             session_id,
             self.project_path,
             permission_mode=mode,
-            resume_session_id=sdk_session_id if sdk_session_id else None
+            resume_session_id=sdk_session_id if sdk_session_id else None,
+            ws_send_callback=ws_send_callback
         )
-        session = AgentSession(session_id, self.project_path, backend, permission_mode=mode)
+        session = AgentSession(session_id, self.project_path, backend, permission_mode=mode, ws_send_callback=ws_send_callback)
         self.sessions[session_id] = session
 
         # Initialize slash commands proactively for autocomplete
@@ -370,6 +376,10 @@ class SessionManager:
         # Update session state
         session.permission_mode = new_mode
 
+        # Cleanup old backend before recreating
+        if hasattr(session.backend, 'shutdown'):
+            await session.backend.shutdown()
+
         # Recreate backend with new permission mode
         # Preserve SDK session if it was established
         resume_session_id = session.backend.sdk_session_id if session.backend.has_established_session else None
@@ -377,7 +387,8 @@ class SessionManager:
             session_id,
             self.project_path,
             permission_mode=new_mode,
-            resume_session_id=resume_session_id
+            resume_session_id=resume_session_id,
+            ws_send_callback=session.ws_send_callback
         )
 
         # Persist change to database

@@ -112,6 +112,18 @@ class CommandDiscovery:
         except Exception as e:
             logger.warning(f"Failed to get slash commands from backend: {e}")
 
+        # Add system commands (built-in client-side commands)
+        system_commands = [
+            Command(
+                name="clear",
+                command="/clear",
+                description="Clear conversation and start a new session",
+                category="system",
+                mode="agent"
+            )
+        ]
+        commands.extend(system_commands)
+
         # SUPPLEMENTARY SOURCE: Scan filesystem for custom commands
         filesystem_commands = self._scan_filesystem_commands()
 
