@@ -147,6 +147,13 @@ class SessionManager:
         session = AgentSession(session_id, self.project_path, backend, permission_mode=mode)
         self.sessions[session_id] = session
 
+        # Initialize slash commands proactively for autocomplete
+        if hasattr(backend, 'initialize_slash_commands'):
+            try:
+                await backend.initialize_slash_commands()
+            except Exception as e:
+                logger.warning(f"Failed to initialize slash commands: {e}")
+
         # Persist metadata to SQLite with URL context
         if self.session_store:
             base_url = normalize_url_for_matching(page_url) if page_url else None

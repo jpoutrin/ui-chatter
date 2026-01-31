@@ -287,15 +287,42 @@ async def list_commands(
     try:
         commands = await discovery.discover_commands(mode=mode)
 
-        # Filter by prefix if provided
+        # Filter by prefix if provided (fuzzy matching)
         if prefix:
             # For agent commands, strip leading slash for comparison
             prefix_normalized = prefix.lstrip('/') if prefix.startswith('/') else prefix
-            commands = [
-                cmd for cmd in commands
-                if cmd.name.startswith(prefix_normalized) or
-                   cmd.command.startswith(prefix)
-            ]
+            prefix_lower = prefix_normalized.lower()
+
+            # Score and filter commands based on fuzzy matching
+            scored_commands = []
+            for cmd in commands:
+                name_lower = cmd.name.lower()
+                command_lower = cmd.command.lower()
+
+                # Calculate match score
+                score = 0
+                if name_lower.startswith(prefix_lower):
+                    # Prefix match gets highest score
+                    score = 100
+                elif prefix_lower in name_lower:
+                    # Contains match gets medium score
+                    # Bonus for earlier position
+                    position = name_lower.index(prefix_lower)
+                    score = 50 - position
+                elif command_lower.startswith(prefix):
+                    # Command prefix match
+                    score = 90
+                elif prefix_lower in command_lower:
+                    # Command contains match
+                    position = command_lower.index(prefix_lower)
+                    score = 40 - position
+
+                if score > 0:
+                    scored_commands.append((score, cmd))
+
+            # Sort by score (highest first) and extract commands
+            scored_commands.sort(key=lambda x: x[0], reverse=True)
+            commands = [cmd for score, cmd in scored_commands]
 
         # Apply limit
         commands = commands[:limit]

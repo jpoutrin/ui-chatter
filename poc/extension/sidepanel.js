@@ -500,9 +500,7 @@ function handleElementCaptured(context) {
   elements.selectedElement.classList.add('visible');
   elements.elementTag.textContent = `<${el.tagName}${el.id ? ` id="${el.id}"` : ''}${el.classList.length ? ` class="${el.classList.join(' ')}"` : ''}>`;
 
-  // Enable input
-  elements.messageInput.disabled = false;
-  elements.sendBtn.disabled = false;
+  // Focus input (always enabled now)
   elements.messageInput.focus();
 
   // Add message
@@ -847,6 +845,258 @@ function truncate(str, maxLength) {
   return str.length > maxLength ? str.substring(0, maxLength) + '...' : str;
 }
 
+/**
+ * Command Autocomplete Controller
+ */
+const AutocompleteController = {
+  dropdown: null,
+  listElement: null,
+  inputElement: null,
+  selectedIndex: -1,
+  suggestions: [],
+  currentPrefix: '',
+  isVisible: false,
+  abortController: null,
+
+  init() {
+    this.dropdown = document.getElementById('autocompleteDropdown');
+    this.listElement = document.getElementById('autocompleteList');
+    this.inputElement = elements.messageInput;
+
+    if (!this.dropdown || !this.listElement || !this.inputElement) {
+      console.error('[AUTOCOMPLETE] Required DOM elements not found');
+      return;
+    }
+
+    this.inputElement.addEventListener('input', (e) => this.handleInput(e));
+    this.inputElement.addEventListener('keydown', (e) => this.handleKeydown(e));
+
+    document.addEventListener('click', (e) => {
+      if (!this.dropdown.contains(e.target) && e.target !== this.inputElement) {
+        this.hide();
+      }
+    });
+
+    this.inputElement.addEventListener('blur', (e) => {
+      setTimeout(() => {
+        if (!this.dropdown.contains(document.activeElement)) {
+          this.hide();
+        }
+      }, 150);
+    });
+
+    console.log('[AUTOCOMPLETE] Controller initialized');
+  },
+
+  async handleInput(e) {
+    const input = e.target.value;
+    const cursorPos = e.target.selectionStart;
+    const textBeforeCursor = input.substring(0, cursorPos);
+    // Match slash commands including colons, hyphens, and underscores
+    // Examples: /commit, /my-plugin:command, /product-design:parallel-run
+    // Use \- to escape hyphen for safety
+    const slashMatch = textBeforeCursor.match(/\/([\w:\-]*)$/);
+
+    console.log('[AUTOCOMPLETE] Input event:', { input, cursorPos, textBeforeCursor, slashMatch });
+
+    if (slashMatch) {
+      const prefix = '/' + slashMatch[1];
+      console.log('[AUTOCOMPLETE] Slash detected, prefix:', prefix);
+      if (prefix !== this.currentPrefix) {
+        this.currentPrefix = prefix;
+        await this.fetchSuggestions(prefix);
+      }
+    } else {
+      this.hide();
+    }
+  },
+
+  async fetchSuggestions(prefix) {
+    console.log('[AUTOCOMPLETE] fetchSuggestions called with prefix:', prefix);
+    console.log('[AUTOCOMPLETE] currentSessionId:', currentSessionId);
+
+    if (!currentSessionId) {
+      console.warn('[AUTOCOMPLETE] No active session - hiding autocomplete');
+      this.suggestions = [];
+      this.hide();
+      return;
+    }
+
+    if (this.abortController) {
+      this.abortController.abort();
+    }
+    this.abortController = new AbortController();
+
+    try {
+      const url = `http://localhost:3456/api/v1/projects/${currentSessionId}/commands?mode=agent&prefix=${encodeURIComponent(prefix)}&limit=20`;
+      console.log('[AUTOCOMPLETE] Fetching from:', url);
+      const response = await fetch(url, { signal: this.abortController.signal });
+
+      console.log('[AUTOCOMPLETE] Response status:', response.status);
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log('[AUTOCOMPLETE] Received data:', data);
+      this.suggestions = data.commands || [];
+      console.log('[AUTOCOMPLETE] Suggestions:', this.suggestions);
+      this.render();
+
+    } catch (error) {
+      if (error.name === 'AbortError') return;
+      console.error('[AUTOCOMPLETE] Failed to fetch:', error);
+      this.hide();
+    }
+  },
+
+  render() {
+    console.log('[AUTOCOMPLETE] render() called, suggestions count:', this.suggestions.length);
+    this.listElement.innerHTML = '';
+
+    if (this.suggestions.length === 0) {
+      this.listElement.innerHTML = '<div class="autocomplete-empty">No matching commands found</div>';
+      this.show();
+      return;
+    }
+
+    this.suggestions.forEach((cmd, index) => {
+      const item = document.createElement('div');
+      item.className = 'autocomplete-item';
+      item.dataset.index = index;
+
+      const nameEl = document.createElement('div');
+      nameEl.className = 'command-name';
+      nameEl.textContent = cmd.command;
+      item.appendChild(nameEl);
+
+      if (cmd.description) {
+        const descEl = document.createElement('div');
+        descEl.className = 'command-description';
+        descEl.textContent = cmd.description;
+        item.appendChild(descEl);
+      }
+
+      item.addEventListener('click', () => this.selectSuggestion(index));
+      this.listElement.appendChild(item);
+    });
+
+    this.selectedIndex = -1;
+    this.show();
+  },
+
+  handleKeydown(e) {
+    if (!this.isVisible) return;
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        this.moveSelection(1);
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        this.moveSelection(-1);
+        break;
+      case 'Enter':
+        if (this.selectedIndex >= 0) {
+          e.preventDefault();
+          this.selectSuggestion(this.selectedIndex);
+        }
+        break;
+      case 'Tab':
+        if (this.selectedIndex >= 0) {
+          e.preventDefault();
+          this.selectSuggestion(this.selectedIndex);
+        } else if (this.suggestions.length > 0) {
+          e.preventDefault();
+          this.selectSuggestion(0);
+        }
+        break;
+      case 'Escape':
+        e.preventDefault();
+        this.hide();
+        break;
+    }
+  },
+
+  moveSelection(delta) {
+    const items = this.listElement.querySelectorAll('.autocomplete-item');
+    if (items.length === 0) return;
+
+    if (this.selectedIndex >= 0 && this.selectedIndex < items.length) {
+      items[this.selectedIndex].classList.remove('selected');
+    }
+
+    this.selectedIndex += delta;
+
+    if (this.selectedIndex < 0) {
+      this.selectedIndex = items.length - 1;
+    } else if (this.selectedIndex >= items.length) {
+      this.selectedIndex = 0;
+    }
+
+    items[this.selectedIndex].classList.add('selected');
+    items[this.selectedIndex].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  },
+
+  selectSuggestion(index) {
+    if (index < 0 || index >= this.suggestions.length) return;
+
+    const selected = this.suggestions[index];
+    const input = this.inputElement;
+    const currentValue = input.value;
+    const cursorPos = input.selectionStart;
+    const beforeCursor = currentValue.substring(0, cursorPos);
+    const afterCursor = currentValue.substring(cursorPos);
+    const slashMatch = beforeCursor.match(/\/(\w*)$/);
+
+    if (!slashMatch) return;
+
+    const startPos = cursorPos - slashMatch[0].length;
+    const newValue = currentValue.substring(0, startPos) + selected.command + ' ' + afterCursor;
+
+    input.value = newValue;
+    const newCursorPos = startPos + selected.command.length + 1;
+    input.setSelectionRange(newCursorPos, newCursorPos);
+
+    this.hide();
+    input.focus();
+
+    console.log('[AUTOCOMPLETE] Inserted:', selected.command);
+  },
+
+  show() {
+    console.log('[AUTOCOMPLETE] show() called');
+    const inputRect = this.inputElement.getBoundingClientRect();
+    console.log('[AUTOCOMPLETE] Input rect:', inputRect);
+
+    // Position above the input box
+    const dropdownHeight = Math.min(400, this.suggestions.length * 60); // Estimate height
+    this.dropdown.style.bottom = `${window.innerHeight - inputRect.top + 4}px`;
+    this.dropdown.style.top = 'auto';
+    this.dropdown.style.left = `${inputRect.left}px`;
+    this.dropdown.style.width = `${Math.max(inputRect.width, 300)}px`;
+    this.dropdown.style.display = 'block';
+
+    console.log('[AUTOCOMPLETE] Dropdown positioned above input');
+    this.isVisible = true;
+  },
+
+  hide() {
+    this.dropdown.style.display = 'none';
+    this.suggestions = [];
+    this.selectedIndex = -1;
+    this.currentPrefix = '';
+    this.isVisible = false;
+
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+  }
+};
+
 // Select element button
 elements.selectBtn.addEventListener('click', async () => {
   try {
@@ -894,7 +1144,7 @@ elements.selectBtn.addEventListener('click', async () => {
 // Send message
 function sendMessage() {
   const message = elements.messageInput.value.trim();
-  if (!message || !currentContext) return;
+  if (!message) return;
 
   // Add user message to chat
   addMessage('user', message);
@@ -905,10 +1155,10 @@ function sendMessage() {
   // Reset last assistant message
   lastAssistantMessage = null;
 
-  // Send to background script
+  // Send to background script (context is optional)
   chrome.runtime.sendMessage({
     type: 'send_chat',
-    context: currentContext,
+    context: currentContext || null,
     message
   });
 }
@@ -972,6 +1222,12 @@ elements.messageInput.addEventListener('keypress', (e) => {
   } catch (err) {
     console.error('[UI CHATTER] Error during initialization:', err);
   }
+})();
+
+// Initialize autocomplete
+(function() {
+  console.log('[AUTOCOMPLETE] Initializing...');
+  AutocompleteController.init();
 })();
 
 // Check markdown libraries on load

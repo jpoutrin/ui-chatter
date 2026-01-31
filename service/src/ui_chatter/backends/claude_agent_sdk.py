@@ -17,6 +17,10 @@ from ..models.messages import (
 
 logger = logging.getLogger(__name__)
 
+# Global cache for slash commands (shared across all backend instances)
+_SLASH_COMMANDS_CACHE: list[str] = []
+_SLASH_COMMANDS_INITIALIZED = False
+
 
 def is_debug() -> bool:
     """Check if debug logging is enabled."""
@@ -42,6 +46,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
         super().__init__(project_path)
         self.permission_mode = permission_mode
         self.slash_commands = []  # Captured from SDK init message
+        self.slash_commands_initialized = False  # Track if we've fetched commands
         self.allowed_tools = [
             "Read", "Write", "Edit", "Bash", "Glob", "Grep"
         ]
@@ -49,6 +54,85 @@ class ClaudeAgentSDKBackend(AgentBackend):
         # If resuming an existing session, set it
         if resume_session_id:
             self.set_sdk_session_id(resume_session_id)
+
+    async def initialize_slash_commands(self) -> None:
+        """
+        Initialize slash commands by sending a minimal query to get the init message.
+        Uses global cache so all backend instances share the same commands.
+        """
+        global _SLASH_COMMANDS_CACHE, _SLASH_COMMANDS_INITIALIZED
+
+        if _SLASH_COMMANDS_INITIALIZED:
+            logger.debug("[AGENT SDK] Slash commands already initialized globally")
+            self.slash_commands = _SLASH_COMMANDS_CACHE
+            self.slash_commands_initialized = True
+            return
+
+        logger.info("[AGENT SDK] Initializing slash commands globally...")
+
+        try:
+            # Always create a new session for initialization (don't resume)
+            # This ensures we get the init message with slash_commands
+            # Include user and project settings to load plugins
+            options = ClaudeAgentOptions(
+                resume=None,  # Force new session to get init message
+                allowed_tools=self.allowed_tools,
+                permission_mode=self.permission_mode,
+                cwd=self.project_path,
+                setting_sources=['user', 'project'],  # Load plugins from user and project directories
+                stderr=lambda msg: logger.error(f"[SDK STDERR] {msg}"),
+            )
+
+            # Send minimal prompt to get init message with slash commands
+            message_count = 0
+            async for msg in query(prompt=".", options=options):
+                msg_type = type(msg).__name__
+                message_count += 1
+                logger.debug(f"[AGENT SDK] Init query message #{message_count}: {msg_type}")
+
+                if msg_type == "SystemMessage":
+                    logger.debug(f"[AGENT SDK] SystemMessage attributes: {dir(msg)}")
+                    if hasattr(msg, 'subtype'):
+                        logger.debug(f"[AGENT SDK] SystemMessage subtype: {msg.subtype}")
+
+                        if msg.subtype == 'init':
+                            # Log the data to see what's available
+                            if hasattr(msg, 'data'):
+                                logger.debug(f"[AGENT SDK] Init message data keys: {list(msg.data.keys()) if isinstance(msg.data, dict) else 'not a dict'}")
+                                logger.debug(f"[AGENT SDK] Init message data: {msg.data}")
+
+                            # Try to get slash commands from data or as direct attribute
+                            slash_cmds = None
+                            if hasattr(msg, 'slash_commands'):
+                                slash_cmds = msg.slash_commands
+                                logger.debug("[AGENT SDK] Found slash_commands as direct attribute")
+                            elif hasattr(msg, 'data') and isinstance(msg.data, dict):
+                                slash_cmds = msg.data.get('slash_commands')
+                                logger.debug(f"[AGENT SDK] Found slash_commands in data: {slash_cmds is not None}")
+
+                            if slash_cmds:
+                                # Store in global cache
+                                _SLASH_COMMANDS_CACHE.clear()
+                                _SLASH_COMMANDS_CACHE.extend(slash_cmds)
+                                _SLASH_COMMANDS_INITIALIZED = True
+
+                                # Also store in instance
+                                self.slash_commands = slash_cmds
+                                self.slash_commands_initialized = True
+
+                                logger.info(f"[AGENT SDK] Initialized {len(slash_cmds)} slash commands globally: {slash_cmds[:5]}...")
+                                return  # We got what we need, exit early
+                            else:
+                                logger.warning("[AGENT SDK] Init message has no slash_commands (checked attribute and data dict)")
+
+            logger.warning(f"[AGENT SDK] Initialization complete but no init message received (processed {message_count} messages)")
+            _SLASH_COMMANDS_INITIALIZED = True  # Mark as initialized to prevent retry
+            self.slash_commands_initialized = True
+
+        except Exception as e:
+            logger.error(f"[AGENT SDK] Failed to initialize slash commands: {e}")
+            _SLASH_COMMANDS_INITIALIZED = True  # Don't retry on every call
+            self.slash_commands_initialized = True
 
     async def handle_chat(
         self,
@@ -105,6 +189,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
                     allowed_tools=self.allowed_tools,
                     permission_mode=self.permission_mode,
                     cwd=self.project_path,
+                    setting_sources=['user', 'project'],  # Load plugins
                     stderr=lambda msg: logger.error(f"[SDK STDERR] {msg}"),
                 )
             else:
@@ -113,6 +198,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
                     allowed_tools=self.allowed_tools,
                     permission_mode=self.permission_mode,
                     cwd=self.project_path,
+                    setting_sources=['user', 'project'],  # Load plugins
                     stderr=lambda msg: logger.error(f"[SDK STDERR] {msg}"),
                 )
 
@@ -229,6 +315,7 @@ class ClaudeAgentSDKBackend(AgentBackend):
                 elif msg_type == "SystemMessage":
                     # Capture session ID and slash_commands from init message (first message)
                     if hasattr(msg, 'subtype') and msg.subtype == 'init':
+                        # Capture session ID from message.data
                         if hasattr(msg, 'data') and isinstance(msg.data, dict):
                             sdk_session_id = msg.data.get('session_id')
                             if sdk_session_id:
@@ -250,13 +337,17 @@ class ClaudeAgentSDKBackend(AgentBackend):
                                             f"Expected: {self.sdk_session_id}, Got: {sdk_session_id}"
                                         )
 
-                            # Capture slash_commands from init message
-                            slash_commands = msg.data.get('slash_commands', [])
-                            if slash_commands:
-                                logger.info(f"[AGENT SDK] Captured {len(slash_commands)} slash commands from SDK")
+                        # Capture slash_commands directly from message attribute (not from data dict)
+                        if hasattr(msg, 'slash_commands'):
+                            slash_commands = msg.slash_commands
+                            if slash_commands and not self.slash_commands_initialized:
+                                logger.info(f"[AGENT SDK] Captured {len(slash_commands)} slash commands from SDK: {slash_commands[:5]}...")
                                 self.slash_commands = slash_commands
-                            else:
-                                logger.debug("[AGENT SDK] No slash_commands in init message, will use filesystem discovery")
+                                self.slash_commands_initialized = True
+                            elif not slash_commands:
+                                logger.debug("[AGENT SDK] Init message has empty slash_commands list")
+                        else:
+                            logger.warning("[AGENT SDK] Init message missing slash_commands attribute")
                     # SystemMessage doesn't yield anything to the client (except session_established above)
 
         except asyncio.CancelledError:
@@ -383,14 +474,21 @@ class ClaudeAgentSDKBackend(AgentBackend):
 
     def get_slash_commands(self) -> list[str]:
         """
-        Return slash commands captured from SDK init message.
+        Return slash commands from SDK.
 
-        This is backend-specific - not part of AgentBackend ABC.
-        CommandDiscovery uses duck typing to check availability.
+        Uses global cache shared across all backend instances, falling back to
+        instance cache if available.
 
         Returns:
-            List of slash command names (e.g., ['/compact', '/clear', '/commit'])
+            List of slash command names (e.g., ['compact', 'clear', 'commit'])
         """
+        global _SLASH_COMMANDS_CACHE
+
+        # Prefer global cache (shared across all instances)
+        if _SLASH_COMMANDS_CACHE:
+            return _SLASH_COMMANDS_CACHE
+
+        # Fallback to instance cache
         return self.slash_commands
 
     async def shutdown(self) -> None:
