@@ -653,6 +653,13 @@ function handleElementCaptured(context: CapturedElement): void {
   currentContext = context;
   const el = context.element;
 
+  console.log('[UI CHATTER] Element captured:', {
+    tagName: el.tagName,
+    id: el.id,
+    classes: el.classList,
+    context
+  });
+
   // Show selected element
   elements.selectedElement.classList.add('visible');
   elements.elementTag.textContent = `<${el.tagName}${el.id ? ` id="${el.id}"` : ''}${el.classList.length ? ` class="${el.classList.join(' ')}"` : ''}>`;
@@ -1270,6 +1277,11 @@ function sendMessage() {
 
   // Reset last assistant message
   lastAssistantMessage = null;
+
+  console.log('[UI CHATTER] Sending chat message with context:', {
+    message,
+    elementContext: currentContext
+  });
 
   // Send to background script (context is optional)
   sendRuntimeMessage({
