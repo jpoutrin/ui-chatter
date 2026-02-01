@@ -151,6 +151,7 @@ declare global {
 
 // Markdown library load state
 let librariesLoaded: boolean = false;
+let domPurifyConfigured: boolean = false;
 
 // Check if markdown libraries are available
 function checkLibraries(): boolean {
@@ -158,6 +159,19 @@ function checkLibraries(): boolean {
       typeof DOMPurify !== 'undefined' &&
       typeof Prism !== 'undefined') {
     librariesLoaded = true;
+
+    // Configure DOMPurify once when libraries are loaded
+    if (!domPurifyConfigured) {
+      DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
+        if (data.attrName === 'class') {
+          // Allow all class attributes - they're safe and needed for syntax highlighting
+          return;
+        }
+      });
+      domPurifyConfigured = true;
+      console.log('✓ DOMPurify configured for syntax highlighting');
+    }
+
     console.log('✓ Markdown libraries loaded');
     return true;
   }
@@ -946,14 +960,14 @@ function renderMarkdown(messageElement) {
     // Parse markdown
     const parsed = marked.parse(rawContent);
 
-    // Sanitize HTML
+    // Sanitize HTML (DOMPurify hook is configured once in checkLibraries)
     const sanitized = DOMPurify.sanitize(parsed, {
       ALLOWED_TAGS: [
         'p', 'br', 'strong', 'em', 'code', 'pre',
         'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
         'ul', 'ol', 'li', 'blockquote', 'a'
       ],
-      ALLOWED_ATTR: ['href', 'class', 'language-*'],
+      ALLOWED_ATTR: ['href', 'class'],
       ALLOW_DATA_ATTR: false
     });
 
