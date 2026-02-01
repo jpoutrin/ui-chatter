@@ -202,8 +202,10 @@
     .message {
       max-width: 85%;
       padding: 10px 12px;
+      padding-bottom: 40px; /* Make room for copy button at bottom */
       border-radius: 8px;
       word-wrap: break-word;
+      position: relative;
     }
 
     .message.user {
@@ -219,39 +221,93 @@
       max-width: 95%;
     }
 
+    /* Message content wrapper */
+    .message-content {
+      display: block;
+      width: 100%;
+      padding-right: 36px; /* Prevent text from overlapping button area */
+    }
+
+    /* Copy button - positioned at bottom right */
+    .copy-btn {
+      position: absolute;
+      bottom: 4px;
+      right: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      color: #6b7280;
+      cursor: pointer;
+      transition: all 0.2s;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    }
+
+    .copy-btn:hover {
+      background: white;
+      border-color: #d1d5db;
+      color: #374151;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    .message.user .copy-btn {
+      background: rgba(255, 255, 255, 0.2);
+      border-color: rgba(255, 255, 255, 0.3);
+      color: white;
+    }
+
+    .message.user .copy-btn:hover {
+      background: rgba(255, 255, 255, 0.3);
+      border-color: rgba(255, 255, 255, 0.5);
+    }
+
+    .copy-btn.copied {
+      /* Keep same colors, just show checkmark */
+    }
+
+    .copy-btn svg {
+      flex-shrink: 0;
+      display: block;
+    }
+
     /* Markdown content styling */
-    .message.assistant h1,
-    .message.assistant h2,
-    .message.assistant h3,
-    .message.assistant h4,
-    .message.assistant h5,
-    .message.assistant h6 {
+    .message-content h1,
+    .message-content h2,
+    .message-content h3,
+    .message-content h4,
+    .message-content h5,
+    .message-content h6 {
       margin-top: 16px;
       margin-bottom: 8px;
       font-weight: 600;
     }
 
-    .message.assistant h1 { font-size: 20px; }
-    .message.assistant h2 { font-size: 18px; }
-    .message.assistant h3 { font-size: 16px; }
-    .message.assistant h4 { font-size: 14px; }
+    .message-content h1 { font-size: 20px; }
+    .message-content h2 { font-size: 18px; }
+    .message-content h3 { font-size: 16px; }
+    .message-content h4 { font-size: 14px; }
 
-    .message.assistant p {
+    .message-content p {
       margin-bottom: 12px;
       line-height: 1.6;
     }
 
-    .message.assistant ul,
-    .message.assistant ol {
+    .message-content ul,
+    .message-content ol {
       margin-left: 20px;
       margin-bottom: 12px;
     }
 
-    .message.assistant li {
+    .message-content li {
       margin-bottom: 4px;
     }
 
-    .message.assistant code {
+    .message-content code {
       background: #f3f4f6;
       padding: 2px 6px;
       border-radius: 3px;
@@ -259,7 +315,7 @@
       font-size: 13px;
     }
 
-    .message.assistant pre {
+    .message-content pre {
       background: #1f2937;
       color: #e5e7eb;
       padding: 12px;
@@ -268,13 +324,13 @@
       margin: 12px 0;
     }
 
-    .message.assistant pre code {
+    .message-content pre code {
       background: transparent;
       padding: 0;
       color: inherit;
     }
 
-    .message.assistant blockquote {
+    .message-content blockquote {
       border-left: 3px solid #d1d5db;
       padding-left: 12px;
       margin: 12px 0;
@@ -282,12 +338,12 @@
       font-style: italic;
     }
 
-    .message.assistant a {
+    .message-content a {
       color: #3b82f6;
       text-decoration: underline;
     }
 
-    .message.assistant a:hover {
+    .message-content a:hover {
       color: #2563eb;
     }
 

@@ -928,10 +928,17 @@ function renderMarkdown(messageElement) {
 
   console.log('[MARKDOWN] Starting render, content length:', rawContent.length);
 
+  // Get the content wrapper (first child)
+  const contentWrapper = messageElement.querySelector('.message-content');
+  if (!contentWrapper) {
+    console.warn('No content wrapper found, skipping markdown render');
+    return;
+  }
+
   // Check if libraries are loaded
   if (!librariesLoaded || typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
     console.warn('Markdown libraries not loaded, showing plain text');
-    messageElement.textContent = rawContent;
+    contentWrapper.textContent = rawContent;
     return;
   }
 
@@ -950,12 +957,12 @@ function renderMarkdown(messageElement) {
       ALLOW_DATA_ATTR: false
     });
 
-    // Set HTML
-    messageElement.innerHTML = sanitized;
+    // Set HTML in content wrapper only (preserves copy button)
+    contentWrapper.innerHTML = sanitized;
 
     // Apply syntax highlighting if Prism is available
     if (typeof Prism !== 'undefined') {
-      messageElement.querySelectorAll('pre code').forEach(block => {
+      contentWrapper.querySelectorAll('pre code').forEach(block => {
         try {
           Prism.highlightElement(block);
         } catch (err) {
@@ -969,7 +976,7 @@ function renderMarkdown(messageElement) {
   } catch (err) {
     console.error('Error rendering markdown:', err);
     // Fallback to plain text
-    messageElement.textContent = rawContent;
+    contentWrapper.textContent = rawContent;
     // Show user-visible error
     addMessage('error', 'Failed to render markdown. Showing plain text.');
   }
@@ -1001,7 +1008,61 @@ function handleToolActivity(message: ToolActivityMessage): void {
 function addMessage(role, content) {
   const messageDiv = document.createElement('div');
   messageDiv.className = `message ${role}`;
-  messageDiv.textContent = content;
+
+  // Create content wrapper for proper layout
+  const contentWrapper = document.createElement('div');
+  contentWrapper.className = 'message-content';
+  contentWrapper.textContent = content;
+  messageDiv.appendChild(contentWrapper);
+
+  // Add copy button for user and assistant messages
+  if (role === 'user' || role === 'assistant') {
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'copy-btn';
+    copyBtn.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+      </svg>
+    `;
+    copyBtn.title = 'Copy to clipboard';
+
+    copyBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+
+      // Get the raw content from dataset if available (for markdown), otherwise use textContent
+      const textToCopy = messageDiv.dataset.rawContent || contentWrapper.textContent;
+
+      try {
+        await navigator.clipboard.writeText(textToCopy);
+
+        // Visual feedback - show checkmark
+        copyBtn.innerHTML = `
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+        `;
+        copyBtn.classList.add('copied');
+        copyBtn.title = 'Copied!';
+
+        setTimeout(() => {
+          copyBtn.innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          `;
+          copyBtn.classList.remove('copied');
+          copyBtn.title = 'Copy to clipboard';
+        }, 2000);
+      } catch (err) {
+        console.error('Failed to copy:', err);
+      }
+    });
+
+    messageDiv.appendChild(copyBtn);
+  }
+
   elements.messages.appendChild(messageDiv);
   elements.messages.scrollTop = elements.messages.scrollHeight;
   return messageDiv;
