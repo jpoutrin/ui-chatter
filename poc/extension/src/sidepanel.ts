@@ -887,9 +887,16 @@ function handleResponseChunk(message) {
   if (!lastAssistantMessage || lastAssistantMessage.className !== 'message assistant') {
     lastAssistantMessage = addMessage('assistant', '');
     lastAssistantMessage.dataset.rawContent = '';
+    // Add streaming class for visual indicator
+    lastAssistantMessage.classList.add('streaming');
   }
 
   if (done) {
+    // Remove streaming class for smooth transition
+    if (lastAssistantMessage) {
+      lastAssistantMessage.classList.remove('streaming');
+    }
+
     // Final render with markdown
     if (lastAssistantMessage && lastAssistantMessage.dataset.rawContent) {
       console.log('Rendering markdown for completed response');
@@ -902,7 +909,10 @@ function handleResponseChunk(message) {
   lastAssistantMessage.dataset.rawContent += content;
 
   // For streaming, show plain text (will be replaced with markdown when done)
-  lastAssistantMessage.textContent = lastAssistantMessage.dataset.rawContent;
+  const contentWrapper = lastAssistantMessage.querySelector('.message-content');
+  if (contentWrapper) {
+    contentWrapper.textContent = lastAssistantMessage.dataset.rawContent;
+  }
 
   elements.messages.scrollTop = elements.messages.scrollHeight;
 }
