@@ -60,6 +60,37 @@ uv run ui-chatter --port 3456 --debug
 uv run ui-chatter --project /path/to/project
 ```
 
+## Chrome Extension Development
+
+### ⚠️ CRITICAL: Always Rebuild After Modifications
+
+**MANDATORY RULE**: Every time you modify ANY `.ts` file in the `../poc/extension/src/` directory, you MUST immediately rebuild the extension. Changes are NOT reflected until recompiled.
+
+### Recompiling TypeScript
+
+**IMPORTANT**: After modifying any `.ts` files in the `../poc/extension/src/` directory, you MUST recompile the TypeScript to JavaScript.
+
+```bash
+# Navigate to the extension directory
+builtin cd /Users/jeremiepoutrin/projects/github/jpoutrin/ui-chatter/poc/extension
+
+# Compile TypeScript
+npm run build
+
+# Or use watch mode for continuous compilation during development
+npm run build:watch
+```
+
+**Files affected:**
+- `src/*.ts` → compiled to → `dist/*.js`
+- Changes to `.ts` files are NOT reflected in the extension until compiled
+- The Chrome extension loads the compiled `.js` files from the `dist/` directory
+
+**After compilation:**
+1. Reload the extension in Chrome (chrome://extensions/ → click reload icon)
+2. Close and reopen any active side panels to load the new code
+3. Test the changes
+
 ## Python Development Best Practices
 
 ### Use LSP MCP for Type Intelligence

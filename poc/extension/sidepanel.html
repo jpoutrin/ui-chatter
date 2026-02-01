@@ -64,6 +64,20 @@
     .mode-icon {
       font-size: 16px;
       color: #6b7280;
+      transition: color 0.2s ease;
+    }
+
+    /* Mode-specific icon colors */
+    .mode-icon.plan-mode {
+      color: #06b6d4; /* cyan-500 */
+    }
+
+    .mode-icon.fast-mode {
+      color: #f97316; /* orange-500 */
+    }
+
+    .mode-icon.balanced-mode {
+      color: #10b981; /* green-500 */
     }
 
     .permission-mode-selector select {
@@ -202,10 +216,15 @@
     .message {
       max-width: 85%;
       padding: 10px 12px;
-      padding-bottom: 40px; /* Make room for copy button at bottom */
       border-radius: 8px;
       word-wrap: break-word;
       position: relative;
+    }
+
+    /* Only messages with copy buttons need extra bottom padding */
+    .message.user,
+    .message.assistant {
+      padding-bottom: 40px;
     }
 
     .message.user {
@@ -225,6 +244,11 @@
     .message-content {
       display: block;
       width: 100%;
+    }
+
+    /* Only messages with copy buttons need right padding */
+    .message.user .message-content,
+    .message.assistant .message-content {
       padding-right: 36px; /* Prevent text from overlapping button area */
     }
 

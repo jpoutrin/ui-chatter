@@ -10,6 +10,7 @@ import type {
 } from './types.js';
 import { InputHistoryController } from './inputhistory.js';
 import { AutocompleteController } from './autocomplete.js';
+import { PermissionModeController } from './PermissionModeController.js';
 
 // Type definitions
 interface SdkSession {
@@ -196,6 +197,13 @@ const elements: Elements = {
   tabIndicator: document.getElementById('tabIndicator'),
   tabIndicatorText: document.getElementById('tabIndicatorText')
 };
+
+// Initialize Permission Mode Controller
+const permissionModeController = new PermissionModeController(
+  'permissionModeSelect',
+  addMessage,
+  sendRuntimeMessage
+);
 
 // Listen for messages from background script
 chrome.runtime.onMessage.addListener((message: BackgroundToSidepanelMessage) => {
@@ -1112,9 +1120,11 @@ function hideStreamingUI() {
   if (activeToolPanel) {
     activeToolPanel.style.opacity = '0.5';
     setTimeout(() => {
-      activeToolPanel.remove();
-      activeToolPanel = null;
-      activeTools.clear();
+      if (activeToolPanel) {
+        activeToolPanel.remove();
+        activeToolPanel = null;
+        activeTools.clear();
+      }
     }, 500);
   }
 }
@@ -1474,48 +1484,10 @@ document.addEventListener('keydown', (e) => {
   );
 })();
 
-// Initialize permission mode selector
+// Initialize permission mode controller
 (async function initializePermissionMode() {
-  console.log('[PERMISSION MODE] Initializing...');
-
-  // Load current permission mode from storage
-  const result = await chrome.storage.local.get(['permissionMode']);
-  const currentMode = result.permissionMode || 'plan';
-
-  // Set the select value
-  if (elements.permissionModeSelect) {
-    elements.permissionModeSelect.value = currentMode;
-    console.log('[PERMISSION MODE] Loaded:', currentMode);
-  }
-
-  // Listen for mode changes
-  elements.permissionModeSelect.addEventListener('change', async (e) => {
-    const newMode = (e.target as HTMLSelectElement).value;
-    console.log('[PERMISSION MODE] Changed to:', newMode);
-
-    // Save to storage
-    await chrome.storage.local.set({ permissionMode: newMode });
-
-    // Notify background script to update server
-    sendRuntimeMessage({
-      type: RuntimeMessageType.PERMISSION_MODE_CHANGED,
-      mode: newMode
-    });
-
-    // Show confirmation
-    addMessage('status', `Conversation mode changed to: ${getModeLabel(newMode)}`);
-  });
+  await permissionModeController.initialize();
 })();
-
-// Helper function to get mode label
-function getModeLabel(mode) {
-  const labels = {
-    'plan': 'Planning',
-    'bypassPermissions': 'Fast',
-    'acceptEdits': 'Balanced'
-  };
-  return labels[mode] || mode;
-}
 
 // Shift+Tab to cycle through permission modes
 document.addEventListener('keydown', (e) => {
@@ -1526,23 +1498,8 @@ document.addEventListener('keydown', (e) => {
       return;
     }
 
-    // Make sure element exists
-    const modeSelect = document.getElementById('permissionModeSelect') as HTMLSelectElement | null;
-    if (!modeSelect) {
-      console.warn('[PERMISSION MODE] Select element not found');
-      return;
-    }
-
     e.preventDefault();
-
-    const modes = ['plan', 'bypassPermissions', 'acceptEdits'];
-    const currentIndex = modes.indexOf(modeSelect.value);
-    const nextIndex = (currentIndex + 1) % modes.length;
-
-    modeSelect.value = modes[nextIndex];
-    modeSelect.dispatchEvent(new Event('change'));
-
-    console.log('[PERMISSION MODE] Cycled to:', modes[nextIndex]);
+    permissionModeController.cycleMode();
   }
 });
 
@@ -1702,25 +1659,7 @@ async function respondToPermission(approved, modifiedInput = null, answers = nul
 
   // If approving a plan, automatically switch to acceptEdits mode
   if (approved && isPlanApproval) {
-    console.log('[PLAN APPROVAL] Switching to acceptEdits mode after plan approval');
-
-    // Save to storage
-    await chrome.storage.local.set({ permissionMode: 'acceptEdits' });
-
-    // Update UI select
-    const modeSelect = document.getElementById('permissionModeSelect') as HTMLSelectElement;
-    if (modeSelect) {
-      modeSelect.value = 'acceptEdits';
-    }
-
-    // Notify background script to update server
-    sendRuntimeMessage({
-      type: RuntimeMessageType.PERMISSION_MODE_CHANGED,
-      mode: 'acceptEdits'
-    });
-
-    // Show confirmation
-    addMessage('status', '✅ Plan approved! Switched to Balanced mode for implementation.');
+    await permissionModeController.handlePlanApproval();
   }
 
   // Send response via background script
