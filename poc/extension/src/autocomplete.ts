@@ -83,9 +83,9 @@ export const AutocompleteController = {
     // console.log('[AUTOCOMPLETE] currentSessionId:', currentSessionId);
 
     if (!currentSessionId) {
-      // console.warn('[AUTOCOMPLETE] No active session - hiding autocomplete');
+      // console.warn('[AUTOCOMPLETE] No active session - showing waiting message');
       this.suggestions = [];
-      this.hide();
+      this.showWaitingMessage();
       return;
     }
 
@@ -221,7 +221,8 @@ export const AutocompleteController = {
     const cursorPos = input.selectionStart || 0;
     const beforeCursor = currentValue.substring(0, cursorPos);
     const afterCursor = currentValue.substring(cursorPos);
-    const slashMatch = beforeCursor.match(/\/(\w*)$/);
+    // Match same pattern as handleInput - including colons and hyphens
+    const slashMatch = beforeCursor.match(/\/([\w:\-]*)$/);
 
     if (!slashMatch) return;
 
@@ -236,6 +237,13 @@ export const AutocompleteController = {
     input.focus();
 
     // console.log('[AUTOCOMPLETE] Inserted:', selected.command);
+  },
+
+  showWaitingMessage() {
+    if (!this.listElement) return;
+
+    this.listElement.innerHTML = '<div class="autocomplete-empty">Connecting to session... Please wait.</div>';
+    this.show();
   },
 
   show() {
