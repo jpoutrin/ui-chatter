@@ -156,5 +156,7 @@ global.testUtils = {
 // Reset mocks before each test
 beforeEach(() => {
   jest.clearAllMocks();
-  chrome.runtime.lastError = null;
+  if (chrome.runtime) {
+    chrome.runtime.lastError = null;
+  }
 });

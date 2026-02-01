@@ -376,6 +376,19 @@ export interface Settings {
   permissionMode?: PermissionMode;
 }
 
+// Input History types
+export interface InputHistoryEntry {
+  message: string;
+  timestamp: number;
+}
+
+export interface TabInputHistory {
+  entries: InputHistoryEntry[];
+  maxSize: number;
+  currentPosition: number;  // -1 = not navigating, 0+ = history position
+  draftMessage: string;      // Preserve current input when navigating
+}
+
 // Type Guards and Validation Functions
 
 // Validate PermissionMode
