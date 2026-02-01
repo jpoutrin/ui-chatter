@@ -7,6 +7,8 @@ declare const marked: {
 
 declare const DOMPurify: {
   sanitize(html: string, config?: any): string;
+  addHook(hookName: string, hookFunction: (node: Element, data: any) => void): void;
+  removeHook(hookName: string): void;
 };
 
 declare const Prism: {
